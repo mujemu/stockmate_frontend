@@ -1,6 +1,6 @@
 /**
  * 글로벌 뉴스 알림 모달 — 상단에서 슬라이드 다운
- * bullet 탭 시 해당 종목의 공론장(DebateRoom)으로 이동
+ * (불릿은 안내만 표시; 탭해도 화면 전환 없음)
  */
 import React, { useEffect, useRef } from 'react';
 import {
@@ -13,8 +13,6 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNewsAlert } from '../context/NewsAlertContext';
-import { navigationRef } from '../navigation/navigationRef';
-import type { NewsBulletDto } from '../types/stockmateApiV1';
 
 const OWL_IMG = require('../../assets/debate/owl.png');
 
@@ -41,24 +39,6 @@ export function GlobalNewsModal() {
       }).start();
     }
   }, [visible, dismiss, slideY]);
-
-  const handleBulletPress = (bullet: NewsBulletDto) => {
-    if (!bullet.stock_code) return;
-    dismiss();
-    if (navigationRef.isReady()) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (navigationRef as any).navigate({
-        name: 'DebateRoom',
-        merge: false,
-        params: {
-          stockCode: bullet.stock_code,
-          stockName: bullet.stock_name,
-          forumEntrySource: 'news',
-          newsBulletText: bullet.text,
-        },
-      });
-    }
-  };
 
   if (!brief) return null;
 
@@ -87,11 +67,7 @@ export function GlobalNewsModal() {
 
         {/* 불릿 목록 */}
         {brief.bullets.map((b, i) => (
-          <Pressable
-            key={i}
-            style={({ pressed }) => [styles.bulletRow, pressed && styles.bulletRowPressed]}
-            onPress={() => handleBulletPress(b)}
-          >
+          <View key={i} style={styles.bulletRow}>
             <Text style={styles.bullet}>•</Text>
             <View style={styles.bulletContent}>
               <Text style={styles.bulletText}>{b.text}</Text>
@@ -101,8 +77,7 @@ export function GlobalNewsModal() {
                 </View>
               ) : null}
             </View>
-            {b.stock_code ? <Text style={styles.chevron}>›</Text> : null}
-          </Pressable>
+          </View>
         ))}
       </View>
     </Animated.View>
@@ -158,7 +133,6 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     paddingHorizontal: 2,
   },
-  bulletRowPressed: { backgroundColor: '#F4F2FB' },
   bullet: { color: '#7D3BDD', fontSize: 14, fontWeight: '900', lineHeight: 20 },
   bulletContent: { flex: 1, gap: 4 },
   bulletText: { color: '#3A3F52', fontSize: 13, fontWeight: '600', lineHeight: 20 },
@@ -170,5 +144,4 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
   },
   stockTagTxt: { fontSize: 11, fontWeight: '700', color: '#7D3BDD' },
-  chevron: { fontSize: 18, color: '#C5C8D4', lineHeight: 20, marginTop: 2 },
 });

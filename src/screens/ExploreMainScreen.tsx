@@ -293,11 +293,18 @@ export function ExploreMainScreen({ navigation }: Props) {
               <Text style={styles.cardSubTitle}>모두의 커뮤니티</Text>
               <Text style={[styles.cardTitle, styles.talkCardTitle]}>종목 토론</Text>
             </View>
-            <Image
-              source={require('../../assets/icons/stock_discussion.png')}
-              style={styles.talkHeaderIcon}
-              resizeMode="contain"
-            />
+            <View style={styles.talkHeaderIconsWrap}>
+              <Image
+                source={require('../../assets/icons/Domestic_Market_Map.png')}
+                style={styles.talkHeaderIconPiece}
+                resizeMode="contain"
+              />
+              <Image
+                source={require('../../assets/icons/Masters_Shareholding_Rankings.png')}
+                style={styles.talkHeaderIconPiece}
+                resizeMode="contain"
+              />
+            </View>
           </View>
           <Pressable style={[styles.talkRow, styles.talkRowFirst]} onPress={() => openForumDebate(RANKS[0])}>
             <View style={styles.logoCircleSmall}>
@@ -707,7 +714,14 @@ const styles = StyleSheet.create({
   tablePink: { color: '#DD3C8A', fontSize: 13, fontWeight: '700' },
   talkHeaderRow: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 4 },
   talkCardTitle: { fontSize: 20, marginBottom: 0 },
-  talkHeaderIcon: { width: 108, height: 82, marginTop: -8, marginRight: -10 },
+  talkHeaderIconsWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: -8,
+    marginRight: -10,
+    gap: 4,
+  },
+  talkHeaderIconPiece: { width: 52, height: 82 },
   talkRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',

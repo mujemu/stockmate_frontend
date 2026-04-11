@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Image,
@@ -26,6 +26,9 @@ import {
   resolveStockOrderPriceWon,
 } from '../config/stockTradeDetail';
 import { useUserSession } from '../context/UserSessionContext';
+import { navigationRef } from '../navigation/navigationRef';
+import type { ViolationLedger } from '../services/principleViolationLedger';
+import { recordPostTradeViolation } from '../services/principleViolationLedger';
 import { StockmateApiV1 } from '../services/stockmateApiV1';
 
 interface Props {
@@ -81,9 +84,12 @@ export function StockTradeScreen({ navigation, route }: Props) {
   const [sheetMountKey, setSheetMountKey] = useState(0);
   const [submittingOrder, setSubmittingOrder] = useState(false);
   const [activeBehaviorLogId, setActiveBehaviorLogId] = useState<string | null>(null);
-  const [violationScore, setViolationScore] = useState(0);
   const [interventionMessage, setInterventionMessage] = useState<string | null>(null);
   const [violatedPrinciples, setViolatedPrinciples] = useState<string[]>([]);
+  const [postTradeLedger, setPostTradeLedger] = useState<ViolationLedger | null>(null);
+  const [postTradeViolationsExpanded, setPostTradeViolationsExpanded] = useState(false);
+  const [doneLedgerToken, setDoneLedgerToken] = useState(0);
+  const doneLedgerConsumedRef = useRef(-1);
 
   const totalPrice = useMemo(() => {
     const qty = parseInt(quantity || '0', 10);
@@ -92,22 +98,46 @@ export function StockTradeScreen({ navigation, route }: Props) {
   }, [quantity, limitPrice]);
 
   const stockLogo = STOCK_LOGO[stockName];
-  const hasMajorViolation = violationScore >= 60;
-  const violatedPrinciplesText = violatedPrinciples.length > 0
-    ? `위반 원칙: ${violatedPrinciples.join(', ')}`
-    : '';
+  const hasDecisionViolation =
+    violatedPrinciples.length > 0 || Boolean(interventionMessage?.trim());
   const previewViolationMessage = interventionMessage
     ? interventionMessage
-    : hasMajorViolation
-      ? `${stockName} ${orderType === 'buy' ? '매수' : '매도'}는 현재 투자 원칙에 어긋날 가능성이 커요.`
-      : `현재 위반 점수 ${violationScore}점으로 경고 기준(60점) 미만입니다.`;
-  const hasDecisionViolation = hasMajorViolation || violatedPrinciples.length > 0;
+    : hasDecisionViolation
+      ? `${stockName} ${orderType === 'buy' ? '매수' : '매도'}는 설정해 둔 투자 원칙과 맞지 않을 수 있어요.`
+      : '지금 표시된 원칙 점검에서는 우선 손볼 만한 충돌 신호는 없어요.';
 
   const topViolationLabel = violatedPrinciples[0] ?? null;
 
+  const kimooniPreTradeLines = useMemo(() => {
+    if (!hasDecisionViolation) return [] as string[];
+    const out: string[] = [];
+    const iv = interventionMessage?.trim();
+    if (iv) {
+      const parts = iv.split(/\s*·\s*/).map((s) => s.trim()).filter(Boolean);
+      if (parts.length > 1) out.push(...parts);
+      else out.push(iv);
+    }
+    for (const p of violatedPrinciples) {
+      const t = p.trim();
+      if (t && !out.includes(t)) out.push(t);
+    }
+    if (out.length === 0 && hasDecisionViolation) {
+      out.push('이번 주문은 투자 원칙과 맞지 않을 수 있어요.');
+    }
+    return out;
+  }, [hasDecisionViolation, interventionMessage, violatedPrinciples]);
+
+  const useKimooniBulletMode =
+    hasDecisionViolation && !submittingOrder && kimooniPreTradeLines.length > 0;
+
   const kimooniCoachTitle = hasDecisionViolation
-    ? '키문이: 이번 주문은 원칙과 충돌할 수 있어요'
+    ? '키문이: 원칙 위반 감지'
     : '키문이: 원칙 관점에서 한번 더 짚어볼게요';
+
+  const kimooniLead =
+    hasDecisionViolation
+      ? '수량·가격을 조정하거나, 공론장에서 논의한 뒤 다시 시도해 보세요!'
+      : undefined;
 
   const kimooniCoachBody = useMemo(() => {
     if (interventionMessage?.trim()) {
@@ -119,7 +149,7 @@ export function StockTradeScreen({ navigation, route }: Props) {
     if (hasDecisionViolation) {
       return `${previewViolationMessage}${topViolationLabel ? `\n\n우선 점검: 「${topViolationLabel}」` : ''}\n\n수량·가격을 조정하거나, 공론장에서 논의한 뒤 다시 시도해 보세요.`;
     }
-    return `${previewViolationMessage}\n\n지금 설정은 경고선(60점) 안쪽으로 보여요. 그래도 분할·기록 습관은 유지하는 게 좋아요.`;
+    return `${previewViolationMessage}\n\n그래도 분할·기록 습관은 유지하는 게 좋아요.`;
   }, [
     interventionMessage,
     hasDecisionViolation,
@@ -132,12 +162,29 @@ export function StockTradeScreen({ navigation, route }: Props) {
     [stockName, orderType],
   );
 
+  const postTradePrincipleLines = useMemo(() => {
+    if (!postTradeLedger?.principleCounts) return [] as string[];
+    return Object.entries(postTradeLedger.principleCounts)
+      .filter(([, n]) => n > 0)
+      .sort((a, b) => b[1] - a[1])
+      .map(([label, n]) => `「${label}」 누적 ${n}회`);
+  }, [postTradeLedger]);
+
+  const goPrinciplesReport = () => {
+    closeOrderModal();
+    if (navigationRef.isReady()) {
+      navigationRef.navigate('Principles' as never);
+    }
+  };
+
   const openInput = (type: 'buy' | 'sell') => {
     setOrderType(type);
     setActiveBehaviorLogId(null);
-    setViolationScore(0);
     setInterventionMessage(null);
     setViolatedPrinciples([]);
+    setPostTradeLedger(null);
+    setPostTradeViolationsExpanded(false);
+    doneLedgerConsumedRef.current = -1;
     setSheetMountKey((k) => k + 1);
     setOrderModalPhase('quantitySheet');
   };
@@ -157,14 +204,13 @@ export function StockTradeScreen({ navigation, route }: Props) {
         });
         if (cancelled) return;
         if (bl.log?.id) setActiveBehaviorLogId(bl.log.id);
-        if (bl.violation_score != null) setViolationScore(bl.violation_score);
         setInterventionMessage(bl.intervention_message ?? null);
         setViolatedPrinciples(bl.violated_principles ?? []);
         if (bl.intervention_message && bl.log?.id) {
           StockmateApiV1.behaviorLogs.patchState(bl.log.id, { state: 'delivered' }).catch(() => {});
         }
       } catch {
-        /* 오프라인 시 점수·개입은 UI 기본값 유지 */
+        /* 오프라인 시 개입·원칙 목록은 UI 기본값 유지 */
       } finally {
         if (!cancelled) setSubmittingOrder(false);
       }
@@ -183,7 +229,38 @@ export function StockTradeScreen({ navigation, route }: Props) {
     sectorKey,
   ]);
 
+  useEffect(() => {
+    if (orderModalPhase !== 'done' || !userReady || !userId) return;
+    if (doneLedgerConsumedRef.current === doneLedgerToken) return;
+    doneLedgerConsumedRef.current = doneLedgerToken;
+    let cancelled = false;
+    (async () => {
+      try {
+        const ledger = await recordPostTradeViolation(
+          userId,
+          violatedPrinciples.map((s) => String(s).trim()).filter(Boolean),
+          { orderHadViolation: hasDecisionViolation },
+        );
+        if (!cancelled) setPostTradeLedger(ledger);
+      } catch {
+        if (!cancelled) setPostTradeLedger(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    orderModalPhase,
+    doneLedgerToken,
+    userReady,
+    userId,
+    hasDecisionViolation,
+    violatedPrinciples,
+  ]);
+
   const onQuantitySheetConfirm = () => {
+    setPostTradeViolationsExpanded(false);
+    setDoneLedgerToken((t) => t + 1);
     setOrderModalPhase('done');
   };
 
@@ -205,7 +282,6 @@ export function StockTradeScreen({ navigation, route }: Props) {
         orderContext: {
           fromOrderFlow: true,
           orderType,
-          violationScore,
           violatedPrinciples,
           interventionMessage: interventionMessage ?? undefined,
           topViolation: topViolationLabel ?? undefined,
@@ -390,7 +466,12 @@ export function StockTradeScreen({ navigation, route }: Props) {
               bottomInset={insets.bottom}
               loadingBehavior={submittingOrder}
               kimooniTitle={kimooniCoachTitle}
-              kimooniBody={kimooniCoachBody}
+              kimooniBullets={useKimooniBulletMode ? kimooniPreTradeLines.slice(0, 2) : undefined}
+              kimooniMoreInForumCount={
+                useKimooniBulletMode ? Math.max(0, kimooniPreTradeLines.length - 2) : undefined
+              }
+              kimooniLead={useKimooniBulletMode ? kimooniLead : undefined}
+              kimooniBody={useKimooniBulletMode ? undefined : kimooniCoachBody}
               onOpenDebate={onGoDebateRoomBeforeOrder}
             />
           </SafeAreaView>
@@ -439,21 +520,60 @@ export function StockTradeScreen({ navigation, route }: Props) {
                       <Image source={OCTOPUS_GUARD_AVATAR} style={styles.kimooniAvatar} resizeMode="cover" />
                     </View>
                     <View style={styles.principleBody}>
-                      <Text style={styles.principleTitle}>
-                        {hasDecisionViolation ? '키문이와 투자 원칙 재검토가 필요해요' : orderModalCopy.donePrincipleTitle}
-                      </Text>
-                      <Text style={styles.principleDesc}>
-                        {hasDecisionViolation
-                          ? (interventionMessage ??
-                            `${stockName} ${orderType === 'buy' ? '매수' : '매도'} 주문은 현재 투자 원칙과 충돌할 수 있어요. 다음 거래 전에 기준을 다시 맞춰보세요.`)
-                          : orderModalCopy.donePrincipleDesc}
-                      </Text>
-                      {violatedPrinciplesText ? (
-                        <Text style={styles.violationList}>{violatedPrinciplesText}</Text>
-                      ) : null}
-                      <Text style={styles.principleLead}>
-                        {hasDecisionViolation ? '원칙을 잘 못 지켰어요. 다음 거래 전 재설정해 볼게요.' : '원칙을 잘 지키셨어요.'}
-                      </Text>
+                      {hasDecisionViolation ? (
+                        <>
+                          <Text style={styles.principleTitle}>이번 주문은 원칙과 어긋난 거래로 집계됐어요</Text>
+                          <Text style={styles.principleDesc}>
+                            {interventionMessage ??
+                              `${stockName} ${orderType === 'buy' ? '매수' : '매도'}에서 미리 잡아둔 기준과 맞지 않을 수 있어요.`}
+                          </Text>
+                          {postTradeLedger ? (
+                            <>
+                              <Text style={styles.strikeLine}>
+                                누적 위반 {postTradeLedger.globalStrikes}회
+                              </Text>
+                              {postTradePrincipleLines.length > 0 ? (
+                                <>
+                                  <Text style={styles.violationList}>
+                                    {postTradeViolationsExpanded
+                                      ? postTradePrincipleLines.join('\n')
+                                      : postTradePrincipleLines[0]}
+                                  </Text>
+                                  {postTradePrincipleLines.length > 1 ? (
+                                    <Pressable
+                                      style={styles.violationToggleBtn}
+                                      onPress={() =>
+                                        setPostTradeViolationsExpanded((v) => !v)
+                                      }
+                                      hitSlop={8}
+                                    >
+                                      <Text style={styles.violationToggleTxt}>
+                                        {postTradeViolationsExpanded ? '접기' : '더보기'}
+                                      </Text>
+                                    </Pressable>
+                                  ) : null}
+                                </>
+                              ) : null}
+                            </>
+                          ) : (
+                            <ActivityIndicator color={Colors.primary} style={{ marginTop: 8 }} />
+                          )}
+                          <Text style={styles.principleLead}>
+                            투자 원칙 리포트에서 수정·저장하면, 이번 수정 경로에 따라 누적이 정리돼요.
+                          </Text>
+                          {postTradeLedger && postTradeLedger.globalStrikes >= 5 ? (
+                            <Pressable style={styles.principlesCta} onPress={goPrinciplesReport}>
+                              <Text style={styles.principlesCtaTxt}>투자 원칙 리포트 보기</Text>
+                            </Pressable>
+                          ) : null}
+                        </>
+                      ) : (
+                        <>
+                          <Text style={styles.principleTitle}>{orderModalCopy.donePrincipleTitle}</Text>
+                          <Text style={styles.principleDesc}>{orderModalCopy.donePrincipleDesc}</Text>
+                          <Text style={styles.principleLead}>원칙을 잘 지키셨어요. 차분한 판단이에요.</Text>
+                        </>
+                      )}
                     </View>
                   </View>
                   <Pressable style={[styles.primaryBtn, styles.doneConfirmBtn]} onPress={closeOrderModal}>
@@ -698,7 +818,42 @@ const styles = StyleSheet.create({
   principleTitle: { fontSize: 16, fontWeight: '800', color: '#3A3F4E', marginBottom: 6 },
   principleDesc: { fontSize: 14, color: '#585D70', lineHeight: 21 },
   principleLead: { color: Colors.primary, fontSize: 16, fontWeight: '800', marginTop: 10, marginBottom: 10 },
-  violationList: { color: '#6D7182', fontSize: 12, fontWeight: '600', marginBottom: 8 },
+  violationList: {
+    color: '#6D7182',
+    fontSize: 13,
+    fontWeight: '600',
+    marginTop: 8,
+    marginBottom: 4,
+    lineHeight: 20,
+  },
+  strikeLine: {
+    marginTop: 10,
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#4A148C',
+    lineHeight: 22,
+  },
+  principlesCta: {
+    marginTop: 12,
+    borderRadius: 12,
+    backgroundColor: Colors.primary,
+    paddingVertical: 14,
+    alignItems: 'center',
+    alignSelf: 'stretch',
+  },
+  principlesCtaTxt: { color: '#fff', fontSize: 15, fontWeight: '800' },
+  violationToggleBtn: {
+    alignSelf: 'flex-start',
+    marginTop: 6,
+    paddingVertical: 6,
+    paddingHorizontal: 4,
+  },
+  violationToggleTxt: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: Colors.primary,
+    textDecorationLine: 'underline',
+  },
   doneConfirmBtn: { marginTop: 16, alignSelf: 'stretch', flex: 0 },
   ruleBtnSingleDanger: { backgroundColor: '#7D3BDD', borderRadius: 8, alignItems: 'center', paddingVertical: 10 },
   ruleBtnDangerTxt: { color: '#fff', fontWeight: '800' },

@@ -1,10 +1,10 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DimensionValue } from 'react-native';
 import {
   ActivityIndicator,
-  Animated,
   FlatList,
   Keyboard,
+  PanResponder,
   Platform,
   Pressable,
   StyleSheet,
@@ -116,7 +116,6 @@ type ThreadRow =
 export type DebateOrderContext = {
   fromOrderFlow?: boolean;
   orderType?: 'buy' | 'sell';
-  violationScore?: number;
   violatedPrinciples?: string[];
   interventionMessage?: string;
   topViolation?: string;
@@ -153,7 +152,11 @@ function postsToRows(posts: ForumPostOutDto[], selfId: string | null): ThreadRow
 export function DebateRoomScreen({ navigation, route }: Props) {
   const insets = useSafeAreaInsets();
   const { height: winH } = useWindowDimensions();
-  const CHAT_H = Math.round(winH * 0.42);
+  const minChatH = Math.round(winH * 0.26);
+  const maxChatH = Math.round(winH * 0.84);
+  const defaultChatH = Math.round(winH * 0.42);
+  const [chatHeight, setChatHeight] = useState(defaultChatH);
+  const [kbInset, setKbInset] = useState(0);
   const { userId, ready, error: sessionError } = useUserSession();
 
   /**
@@ -191,10 +194,41 @@ export function DebateRoomScreen({ navigation, route }: Props) {
   const owlOnlyMode = isOrderPrincipleNav || topicOwlOnly;
 
   const listRef  = useRef<FlatList>(null);
+  const chatHRef = useRef(defaultChatH);
+  const dragStartH = useRef(defaultChatH);
+  const limitsRef = useRef({ min: minChatH, max: maxChatH });
 
-  // ── 키보드 애니메이션 ─────────────────────────────────────────────────────────
-  const kbOffset = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    chatHRef.current = chatHeight;
+  }, [chatHeight]);
 
+  useEffect(() => {
+    limitsRef.current = { min: minChatH, max: maxChatH };
+    setChatHeight((h) => Math.min(maxChatH, Math.max(minChatH, h)));
+  }, [minChatH, maxChatH]);
+
+  const chatPanResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponder: (_, g) => Math.abs(g.dy) > 4,
+        onPanResponderGrant: () => {
+          dragStartH.current = chatHRef.current;
+        },
+        onPanResponderMove: (_, g) => {
+          const { min, max } = limitsRef.current;
+          const next = Math.min(max, Math.max(min, dragStartH.current - g.dy));
+          chatHRef.current = next;
+          setChatHeight(next);
+        },
+        onPanResponderRelease: () => {
+          listRef.current?.scrollToEnd({ animated: true });
+        },
+      }),
+    [],
+  );
+
+  // ── 키보드 — 채팅 패널 높이와 합산하기 위해 숫자 inset 사용 ─────────────────────
   useEffect(() => {
     const showEv = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
     const hideEv = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
@@ -202,22 +236,18 @@ export function DebateRoomScreen({ navigation, route }: Props) {
     const onShow = Keyboard.addListener(showEv, (e) => {
       const h = e.endCoordinates.height;
       setKeyboardExtraPad(Math.round(h * 0.15));
-      Animated.timing(kbOffset, {
-        toValue:         h,
-        duration:        Platform.OS === 'ios' ? (e.duration ?? 250) : 150,
-        useNativeDriver: false,
-      }).start(() => listRef.current?.scrollToEnd({ animated: true }));
+      setKbInset(h);
+      requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: true }));
     });
-    const onHide = Keyboard.addListener(hideEv, (e) => {
+    const onHide = Keyboard.addListener(hideEv, () => {
       setKeyboardExtraPad(0);
-      Animated.timing(kbOffset, {
-        toValue:         0,
-        duration:        Platform.OS === 'ios' ? (e.duration ?? 250) : 150,
-        useNativeDriver: false,
-      }).start();
+      setKbInset(0);
     });
-    return () => { onShow.remove(); onHide.remove(); };
-  }, [kbOffset]);
+    return () => {
+      onShow.remove();
+      onHide.remove();
+    };
+  }, []);
 
   // ── 새 메시지 추가 시 스크롤 ──────────────────────────────────────────────────
   useEffect(() => {
@@ -570,15 +600,24 @@ export function DebateRoomScreen({ navigation, route }: Props) {
 
       {/* 배경 터치 → 키보드 닫기 */}
       <Pressable
-        style={[StyleSheet.absoluteFill, { bottom: CHAT_H }]}
+        style={[StyleSheet.absoluteFill, { bottom: chatHeight }]}
         onPress={() => Keyboard.dismiss()}
       />
 
-      {/* 하단 채팅 패널 — 키보드 올라오면 bottom 상승 + height 동시 축소 → 상단 고정 */}
-      <Animated.View style={[styles.chatSheet, {
-        height: Animated.subtract(CHAT_H, kbOffset),
-        bottom: kbOffset,
-      }]}>
+      {/* 하단 채팅 패널 — 상단 핸들 드래그로 높이 조절, 키보드 시 inset 반영 */}
+      <View
+        style={[
+          styles.chatSheet,
+          {
+            height: Math.max(minChatH, chatHeight - kbInset),
+            bottom: kbInset,
+          },
+        ]}
+      >
+        <View style={styles.dragZone} {...chatPanResponder.panHandlers}>
+          <View style={styles.dragGrip} />
+          <Text style={styles.dragHint}>드래그하여 이전 대화 영역 확대·축소</Text>
+        </View>
         {initLoading ? (
           <View style={styles.centerPad}>
             <ActivityIndicator size="large" color="#fff" />
@@ -632,7 +671,7 @@ export function DebateRoomScreen({ navigation, route }: Props) {
             <Ionicons name="send" size={20} color="#fff" />
           </Pressable>
         </View>
-      </Animated.View>
+      </View>
 
       {/* 상단 투명 바 */}
       <View style={[styles.topBar, { paddingTop: insets.top + 8 }]} pointerEvents="box-none">
@@ -670,6 +709,26 @@ const styles = StyleSheet.create({
     // VideoView(네이티브 레이어)가 JS 뷰를 덮는 현상 방지
     zIndex: 5,
     elevation: 5,  // Android SurfaceView 위로
+  },
+  dragZone: {
+    paddingTop: 8,
+    paddingBottom: 4,
+    alignItems: 'center',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#E0DCF0',
+    backgroundColor: 'rgba(255,255,255,0.55)',
+  },
+  dragGrip: {
+    width: 40,
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: '#C4B8E0',
+  },
+  dragHint: {
+    marginTop: 6,
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#9E96C0',
   },
   backHit:      { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   topTitles:    { flex: 1, alignItems: 'center' },

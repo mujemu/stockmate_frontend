@@ -158,7 +158,6 @@ export type BehaviorLogCreateBody = {
 export type BehaviorLogCreateResponse = {
   log: BehaviorLogDto;
   intervention_message: string | null;
-  violation_score: number | null;
   violated_principles: string[] | null;
 };
 

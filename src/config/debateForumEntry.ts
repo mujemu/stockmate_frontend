@@ -12,7 +12,6 @@ export type DebateForumEntrySource =
 export type DebateOrderContextForIntro = {
   fromOrderFlow?: boolean;
   orderType?: 'buy' | 'sell';
-  violationScore?: number;
   violatedPrinciples?: string[];
   interventionMessage?: string;
   topViolation?: string;
@@ -63,7 +62,6 @@ export function buildDebateForumSeedTopic(a: BuildDebateForumSeedArgs): { title:
     case 'order_principle_check': {
       const title = sn ? `${sn} · 주문 전 원칙 점검` : sc ? `종목 ${sc} · 주문 전 원칙 점검` : '주문 전 원칙 점검';
       const orderSide = oc?.orderType === 'sell' ? '매도' : oc?.orderType === 'buy' ? '매수' : '매수/매도';
-      const score = oc?.violationScore != null ? `${oc.violationScore}점` : '—';
       const intervention = oc?.interventionMessage?.trim();
       const topV = oc?.topViolation?.trim();
       const vlist = oc?.violatedPrinciples?.filter(Boolean).length
@@ -75,7 +73,6 @@ export function buildDebateForumSeedTopic(a: BuildDebateForumSeedArgs): { title:
         '',
         '【무엇이 문제로 지적됐는지】',
         `· 검토하려던 주문: ${orderSide}`,
-        `· 시스템이 산출한 위반·경고 점수: ${score} (60점 이상이면 원칙과의 충돌 가능성이 크다고 안내합니다)`,
         intervention ? `· 키문이 코멘트(개입 메시지): ${intervention}` : '· 키문이 코멘트: (별도 개입 문구 없음)',
         topV ? `· 우선 점검 원칙: ${topV}` : null,
         vlist ? `· 함께 표시된 관련 원칙: ${vlist}` : null,

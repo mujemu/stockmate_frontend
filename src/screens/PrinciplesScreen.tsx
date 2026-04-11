@@ -1,17 +1,22 @@
-import React from 'react';
+import React, { useCallback } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { PrinciplesPriorityEditor } from '../components/PrinciplesPriorityEditor';
 import { Colors } from '../config/colors';
 import { useUserSession } from '../context/UserSessionContext';
+import { notifyPrinciplesSaved } from '../services/principleViolationLedger';
 
 interface Props {
   navigation: { goBack: () => void };
 }
 
-/** 메뉴: 투자 원칙 순위 재설정 — 터치 배치 + 맞교환, 저장 시 `principles.setup`으로 DB 반영 */
+/** 메뉴: 투자 판단 설정 — 챕터별 1개↑·최소 5개·최대 23개, 저장 시 `principles.setup` 반영 */
 export function PrinciplesScreen({ navigation }: Props) {
   const { userId, ready, error: sessionErr } = useUserSession();
+
+  const onPrinciplesSaved = useCallback(() => {
+    if (userId) void notifyPrinciplesSaved(userId);
+  }, [userId]);
 
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
@@ -27,7 +32,7 @@ export function PrinciplesScreen({ navigation }: Props) {
       ) : !userId ? (
         <Text style={styles.err}>{sessionErr?.message ?? '사용자 세션 없음'}</Text>
       ) : (
-        <PrinciplesPriorityEditor userId={userId} variant="settings" />
+        <PrinciplesPriorityEditor userId={userId} variant="settings" onSaved={onPrinciplesSaved} />
       )}
     </SafeAreaView>
   );

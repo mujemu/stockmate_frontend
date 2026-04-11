@@ -238,7 +238,19 @@ export function OwlReportScreen({ navigation }: Props) {
         </View>
 
         {/* ── 2. 내 투자 원칙 ──────────────────────────────────────────── */}
-        <SectionTitle icon="list" title="내 투자 원칙" />
+        <SectionTitle
+          icon="list"
+          title="내 투자 원칙"
+          right={
+            <Pressable
+              onPress={() => navigation.navigate('Principles')}
+              style={({ pressed }) => [styles.principlesEditBtn, pressed && styles.principlesEditBtnPressed]}
+              hitSlop={8}
+            >
+              <Text style={styles.principlesEditBtnTxt}>투자 원칙 수정</Text>
+            </Pressable>
+          }
+        />
         {!principles?.is_configured ? (
           <View style={styles.emptyCard}>
             <Text style={styles.emptyTxt}>원칙이 아직 설정되지 않았어요.</Text>
@@ -412,16 +424,25 @@ function MetricCard({
 }
 
 function SectionTitle({
-  icon, title, color = C.textMain,
+  icon,
+  title,
+  color = C.textMain,
+  right,
 }: {
   icon: React.ComponentProps<typeof Ionicons>['name'];
   title: string;
   color?: string;
+  right?: React.ReactNode;
 }) {
   return (
-    <View style={styles.sectionTitle}>
-      <Ionicons name={icon as any} size={16} color={color} />
-      <Text style={[styles.sectionTitleTxt, { color }]}>{title}</Text>
+    <View style={[styles.sectionTitle, right ? styles.sectionTitleWithRight : null]}>
+      <View style={styles.sectionTitleLeft}>
+        <Ionicons name={icon as any} size={16} color={color} />
+        <Text style={[styles.sectionTitleTxt, { color }]} numberOfLines={1}>
+          {title}
+        </Text>
+      </View>
+      {right}
     </View>
   );
 }
@@ -474,10 +495,34 @@ const styles = StyleSheet.create({
 
   // Section title
   sectionTitle: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    marginBottom: 8, marginTop: 4,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 8,
+    marginTop: 4,
   },
-  sectionTitleTxt: { fontSize: 14, fontWeight: '800' },
+  sectionTitleWithRight: {
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  sectionTitleLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    flex: 1,
+    minWidth: 0,
+  },
+  sectionTitleTxt: { fontSize: 14, fontWeight: '800', flexShrink: 1 },
+  principlesEditBtn: {
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    backgroundColor: '#E8EAFF',
+    borderWidth: 1,
+    borderColor: C.blue,
+  },
+  principlesEditBtnPressed: { opacity: 0.88 },
+  principlesEditBtnTxt: { fontSize: 12, fontWeight: '800', color: C.blue },
 
   // 공통 카드
   card: {

@@ -1,28 +1,51 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  Dimensions,
+  Platform,
   Pressable,
-  ScrollView,
   StyleSheet,
+  Switch,
   Text,
   View,
 } from 'react-native';
+import { ScrollView } from 'react-native-gesture-handler';
 import { Colors } from '../config/colors';
+import { PrinciplesParamDragSlider } from './PrinciplesParamDragSlider';
+import {
+  CATEGORY_SECTION_ORDER,
+  defaultParamsForRank,
+  getParamSpec,
+  normalizePrincipleCategory,
+  sectionTitle,
+} from '../config/principleUiSpecs';
 import { StockmateApiV1 } from '../services/stockmateApiV1';
-import type { PrincipleDefaultDto, PrinciplesStatusDto } from '../types/stockmateApiV1';
+import type { PrincipleDefaultDto } from '../types/stockmateApiV1';
 
-const PRIMARY = Colors.primary;
-const PRIMARY_LIGHT = Colors.primaryLight;
+const POOL_SIZE = 23;
+/** 시간·비중·매도·매수·감정 각 1개 이상 + 전체 최소 개수 */
+const MIN_SELECTED = 5;
 
-const TOTAL = 10;
+const prefsKey = (userId: string) => `stockmate_principle_prefs_v1:${userId}`;
+
+const PURPLE = Colors.primary;
+
+function sortIdsByDefaultRank(
+  ids: string[],
+  byId: Record<string, PrincipleDefaultDto | undefined>
+): string[] {
+  return [...ids].sort((a, b) => {
+    const ra = byId[a]?.default_rank ?? 999;
+    const rb = byId[b]?.default_rank ?? 999;
+    return ra - rb;
+  });
+}
 
 export type PrinciplesPriorityEditorProps = {
   userId: string;
-  /** 온보딩: 저장 후 콜백 */
   onSaved?: () => void;
-  /** 상단 닫기 (메뉴에서 모달식으로 열 때 등) */
   onRequestClose?: () => void;
-  /** 'onboarding' | 'settings' — 설정만 타이틀 문구에 사용 */
   variant?: 'onboarding' | 'settings';
 };
 
@@ -35,110 +58,150 @@ export function PrinciplesPriorityEditor({
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [defaults, setDefaults] = useState<PrincipleDefaultDto[]>([]);
-  const [status, setStatus] = useState<PrinciplesStatusDto | null>(null);
-
-  /** 상단이 높은 순위 (1위 → 첫 칸) */
+  /** 선택된 원칙 id (항목 내 순서는 default_rank — 사용자 순위 편집 없음) */
   const [rankedIds, setRankedIds] = useState<string[]>([]);
-  /** 순위 목록에서 맞교환용 첫 선택 principle_id */
-  const [swapPick, setSwapPick] = useState<string | null>(null);
-
+  const [paramsByPrinciple, setParamsByPrinciple] = useState<Record<string, Record<string, number>>>({});
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
+
+  const defaultById = useMemo(() => Object.fromEntries(defaults.map((x) => [x.id, x])), [defaults]);
+
+  const selectionState = useMemo(() => {
+    const cats = new Set<string>();
+    for (const id of rankedIds) {
+      const d = defaultById[id];
+      if (d) cats.add(normalizePrincipleCategory(d.category));
+    }
+    const chapterFilled = CATEGORY_SECTION_ORDER.filter((c) => cats.has(c)).length;
+    const chaptersOk = chapterFilled === CATEGORY_SECTION_ORDER.length;
+    const countOk = rankedIds.length >= MIN_SELECTED && rankedIds.length <= POOL_SIZE;
+    const missingCats = CATEGORY_SECTION_ORDER.filter((c) => !cats.has(c));
+    return {
+      canSave: chaptersOk && countOk,
+      chaptersOk,
+      chapterFilled,
+      countOk,
+      missingCats,
+    };
+  }, [rankedIds, defaultById]);
+
+  const mergeStoredParams = useCallback(
+    (raw: unknown, principleList: PrincipleDefaultDto[]) => {
+      const next: Record<string, Record<string, number>> = {};
+      const stored =
+        raw && typeof raw === 'object' && 'params' in (raw as object)
+          ? (raw as { params?: Record<string, Record<string, number>> }).params
+          : null;
+      for (const d of principleList) {
+        const base = defaultParamsForRank(d.default_rank);
+        const fromDisk = stored?.[d.id];
+        next[d.id] = { ...base, ...(fromDisk && typeof fromDisk === 'object' ? fromDisk : {}) };
+      }
+      return next;
+    },
+    []
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
     setErr(null);
     try {
-      const [d, s] = await Promise.all([
+      const [d, s, rawPrefs] = await Promise.all([
         StockmateApiV1.principles.getDefaults(),
         StockmateApiV1.principles.getStatus(userId),
+        AsyncStorage.getItem(prefsKey(userId)),
       ]);
       const sorted = d.slice().sort((a, b) => a.default_rank - b.default_rank);
-      if (sorted.length !== TOTAL) {
-        setErr(`기본 원칙은 ${TOTAL}개여야 합니다. (서버: ${sorted.length}개)`);
+      if (sorted.length !== POOL_SIZE) {
+        setErr(`기본 원칙 풀은 ${POOL_SIZE}개여야 합니다. (서버: ${sorted.length}개) — 백엔드 시드를 확인하세요.`);
         setDefaults(sorted);
-        setStatus(s);
+        setRankedIds([]);
         return;
       }
       setDefaults(sorted);
-      setStatus(s);
 
-      if (s.is_configured && s.rankings.length === TOTAL) {
+      let prefsParsed: unknown = null;
+      if (rawPrefs) {
+        try {
+          prefsParsed = JSON.parse(rawPrefs) as unknown;
+        } catch {
+          prefsParsed = null;
+        }
+      }
+      setParamsByPrinciple(mergeStoredParams(prefsParsed, sorted));
+
+      if (s.is_configured && s.rankings.length >= MIN_SELECTED) {
         const ordered = s.rankings.slice().sort((a, b) => a.rank - b.rank).map((r) => r.principle_id);
-        setRankedIds(ordered);
+        const byId = Object.fromEntries(sorted.map((x) => [x.id, x]));
+        setRankedIds(sortIdsByDefaultRank(ordered, byId));
       } else {
         setRankedIds([]);
       }
-      setSwapPick(null);
       setSaveMsg(null);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
-  }, [userId]);
+  }, [userId, mergeStoredParams]);
 
   useEffect(() => {
     load();
   }, [load]);
 
-  const defaultById = useMemo(() => Object.fromEntries(defaults.map((x) => [x.id, x])), [defaults]);
+  const groupedByCategory = useMemo(() => {
+    const m = new Map<string, PrincipleDefaultDto[]>();
+    for (const c of CATEGORY_SECTION_ORDER) m.set(c, []);
+    for (const d of defaults) {
+      const key = normalizePrincipleCategory(d.category);
+      let list = m.get(key);
+      if (!list) {
+        list = [];
+        m.set(key, list);
+      }
+      list.push(d);
+    }
+    for (const list of m.values()) list.sort((a, b) => a.default_rank - b.default_rank);
+    return m;
+  }, [defaults]);
 
-  const poolIds = useMemo(() => {
-    const set = new Set(rankedIds);
-    return defaults.map((d) => d.id).filter((id) => !set.has(id));
-  }, [defaults, rankedIds]);
-
-  const addFromPool = useCallback((id: string) => {
-    if (rankedIds.length >= TOTAL) return;
-    if (rankedIds.includes(id)) return;
-    setRankedIds((prev) => [...prev, id]);
+  const toggleChip = useCallback((id: string) => {
+    setRankedIds((prev) => {
+      let next: string[];
+      if (prev.includes(id)) next = prev.filter((x) => x !== id);
+      else if (prev.length >= POOL_SIZE) return prev;
+      else next = [...prev, id];
+      return sortIdsByDefaultRank(next, defaultById);
+    });
     setSaveMsg(null);
-  }, [rankedIds]);
+  }, [defaultById]);
 
   const removeFromRanked = useCallback((id: string) => {
-    setRankedIds((prev) => prev.filter((x) => x !== id));
-    setSwapPick((p) => (p === id ? null : p));
+    setRankedIds((prev) => sortIdsByDefaultRank(
+      prev.filter((x) => x !== id),
+      defaultById
+    ));
+    setSaveMsg(null);
+  }, [defaultById]);
+
+  const setParam = useCallback((principleId: string, key: string, value: number) => {
+    setParamsByPrinciple((prev) => ({
+      ...prev,
+      [principleId]: { ...(prev[principleId] ?? {}), [key]: value },
+    }));
     setSaveMsg(null);
   }, []);
 
-  const onTapRanked = useCallback(
-    (id: string) => {
-      if (swapPick == null) {
-        setSwapPick(id);
-        return;
-      }
-      if (swapPick === id) {
-        setSwapPick(null);
-        return;
-      }
-      setRankedIds((prev) => {
-        const i = prev.indexOf(swapPick);
-        const j = prev.indexOf(id);
-        if (i < 0 || j < 0) return prev;
-        const next = [...prev];
-        [next[i], next[j]] = [next[j], next[i]];
-        return next;
-      });
-      setSwapPick(null);
-      setSaveMsg(null);
-    },
-    [swapPick]
-  );
-
-  const fillDefaultOrder = useCallback(() => {
-    setRankedIds(defaults.map((d) => d.id));
-    setSwapPick(null);
-    setSaveMsg(null);
-  }, [defaults]);
-
   const save = useCallback(async () => {
-    if (rankedIds.length !== TOTAL || saving) return;
+    if (!selectionState.canSave || saving) return;
     setSaving(true);
     setSaveMsg(null);
     try {
-      const rankings = rankedIds.map((principle_id, i) => ({ principle_id, rank: i + 1 }));
+      const sortedIds = sortIdsByDefaultRank(rankedIds, defaultById);
+      const rankings = sortedIds.map((principle_id, i) => ({ principle_id, rank: i + 1 }));
       await StockmateApiV1.principles.setup(userId, { rankings });
+      const prefsPayload = JSON.stringify({ version: 1 as const, params: paramsByPrinciple });
+      await AsyncStorage.setItem(prefsKey(userId), prefsPayload);
       if (onSaved) {
         onSaved();
         return;
@@ -150,13 +213,62 @@ export function PrinciplesPriorityEditor({
     } finally {
       setSaving(false);
     }
-  }, [rankedIds, saving, userId, load, onSaved]);
+  }, [rankedIds, saving, userId, load, onSaved, paramsByPrinciple, selectionState.canSave, defaultById]);
+
+  const renderDetailCard = (pid: string) => {
+    const d = defaultById[pid];
+    if (!d) return null;
+    const spec = getParamSpec(d.default_rank);
+    const bag = paramsByPrinciple[pid] ?? defaultParamsForRank(d.default_rank);
+
+    return (
+      <View key={pid} style={styles.detailCard}>
+        <View style={styles.detailHead}>
+          <View style={styles.detailTitleRow}>
+            <View style={styles.detailTitleBody}>
+              <Text style={styles.detailTitle}>{d.short_label}</Text>
+              <View style={styles.catPill}>
+                <Text style={styles.catPillTxt}>{normalizePrincipleCategory(d.category)}</Text>
+              </View>
+            </View>
+          </View>
+          <Pressable onPress={() => removeFromRanked(pid)} hitSlop={8}>
+            <Text style={styles.removeTxt}>제거</Text>
+          </Pressable>
+        </View>
+        {spec?.mode === 'toggle' ? (
+          <View style={styles.toggleRow}>
+            <Switch
+              value={(bag.on ?? 1) === 1}
+              onValueChange={(on) => setParam(pid, 'on', on ? 1 : 0)}
+              trackColor={{ false: '#E5E5E5', true: '#E8D4F7' }}
+              thumbColor={(bag.on ?? 1) === 1 ? PURPLE : '#f4f3f4'}
+            />
+          </View>
+        ) : null}
+        {spec && spec.mode !== 'toggle'
+          ? spec.fields.map((field) => {
+              const raw = bag[field.key] ?? field.min;
+              return (
+                <PrinciplesParamDragSlider
+                  key={`${pid}-${field.key}`}
+                  principleId={pid}
+                  field={field}
+                  value={raw}
+                  onValueChange={setParam}
+                />
+              );
+            })
+          : null}
+      </View>
+    );
+  };
 
   if (loading) {
     return (
       <View style={styles.center}>
-        <ActivityIndicator size="large" color={PRIMARY} />
-        <Text style={styles.hint}>원칙 목록을 불러오는 중…</Text>
+        <ActivityIndicator size="large" color={PURPLE} />
+        <Text style={styles.hint}>불러오는 중…</Text>
       </View>
     );
   }
@@ -172,14 +284,26 @@ export function PrinciplesPriorityEditor({
     );
   }
 
-  const title =
-    variant === 'onboarding'
-      ? '투자 원칙 순위를 정해 주세요'
-      : '투자 원칙 순위 재설정';
+  const { width: winW } = Dimensions.get('window');
+  const hPad = 14;
+  /** 좁은 폰: 3열, 넓은 폰·태블릿: 4열로 23개가 더 많이 한 화면에 들어오게 */
+  const chipCols = winW >= 400 ? 4 : 3;
+  const chipGap = 5;
+  const chipInnerW = winW - hPad * 2;
+  const chipW = (chipInnerW - chipGap * (chipCols - 1)) / chipCols;
+
+  const title = '투자 판단 설정';
   const sub =
     variant === 'onboarding'
-      ? `아래에서 원칙을 눌러 순서를 채운 뒤, 순위 목록에서 두 개를 차례로 누르면 자리를 바꿀 수 있어요. (${TOTAL}개 모두 배치 후 저장)`
-      : `대기 목록에서 눌러 넣고, 순위에서 두 번 눌러 맞바꿀 수 있어요. 저장 시 서버(DB)에 반영됩니다.`;
+      ? `구역마다 1개 이상, 전체 ${MIN_SELECTED}~${POOL_SIZE}개 선택.`
+      : `구역별 1개 이상 · 전체 ${MIN_SELECTED}~${POOL_SIZE}개 후 저장.`;
+
+  const progressPct = Math.min(
+    100,
+    Math.round((selectionState.chapterFilled / 5) * 55 + Math.min(1, rankedIds.length / MIN_SELECTED) * 45)
+  );
+
+  const statusLine = `선택 ${rankedIds.length} · 구역 ${selectionState.chapterFilled}/5`;
 
   return (
     <View style={styles.root}>
@@ -192,7 +316,13 @@ export function PrinciplesPriorityEditor({
       ) : null}
 
       <Text style={styles.heroTitle}>{title}</Text>
-      <Text style={styles.heroSub}>{sub}</Text>
+      <Text style={styles.heroSub} numberOfLines={2}>
+        {sub}
+      </Text>
+
+      <View style={styles.progressTrack}>
+        <View style={[styles.progressFill, { width: `${progressPct}%` }]} />
+      </View>
 
       {err ? (
         <View style={styles.warnBanner}>
@@ -200,85 +330,59 @@ export function PrinciplesPriorityEditor({
         </View>
       ) : null}
 
+      <View style={styles.statusStrip}>
+        <Text style={styles.statusStripTxt}>{statusLine}</Text>
+      </View>
+
       <ScrollView
         style={styles.scroll}
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[styles.scrollContent, { paddingHorizontal: hPad }]}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
+        bounces
       >
-        <Text style={styles.sectionLabel}>
-          내 순위 ({rankedIds.length}/{TOTAL}) · 높을수록 위가 중요
-        </Text>
+        {CATEGORY_SECTION_ORDER.map((cat, sectionIdx) => {
+          const items = groupedByCategory.get(cat) ?? [];
+          if (!items.length) return null;
+          return (
+            <View
+              key={cat}
+              style={[styles.categoryBlock, sectionIdx === 0 && styles.categoryBlockFirst]}
+            >
+              <Text style={styles.categoryTitle}>{sectionTitle(cat)}</Text>
+              <View style={[styles.chipRow, { columnGap: chipGap, rowGap: chipGap }]}>
+                {items.map((d) => {
+                  const on = rankedIds.includes(d.id);
+                  return (
+                    <Pressable
+                      key={d.id}
+                      onPress={() => toggleChip(d.id)}
+                      disabled={rankedIds.length >= POOL_SIZE && !on}
+                      style={({ pressed }) => [
+                        styles.chip,
+                        { width: chipW },
+                        on && styles.chipSelected,
+                        pressed && styles.chipPressed,
+                        rankedIds.length >= POOL_SIZE && !on && styles.chipDisabled,
+                      ]}
+                    >
+                      <Text style={[styles.chipLabel, on && styles.chipLabelSelected]}>
+                        {d.short_label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </View>
+          );
+        })}
+
+        <Text style={styles.sectionLabel}>세부 설정</Text>
         {rankedIds.length === 0 ? (
-          <Text style={styles.empty}>대기 목록에서 원칙을 눌러 여기에 쌓이면 1위부터 순서대로 들어갑니다.</Text>
+          <Text style={styles.empty}>원칙을 선택하면 여기서 수치를 바꿀 수 있어요.</Text>
         ) : (
-          rankedIds.map((id, idx) => {
-            const d = defaultById[id];
-            if (!d) return null;
-            const isPick = swapPick === id;
-            return (
-              <Pressable
-                key={id}
-                onPress={() => onTapRanked(id)}
-                style={({ pressed }) => [
-                  styles.rankedRow,
-                  isPick && styles.rankedRowSelected,
-                  pressed && styles.rankedRowPressed,
-                ]}
-              >
-                <Text style={[styles.rankBadge, isPick && styles.rankBadgeOn]}>{idx + 1}</Text>
-                <View style={styles.rankedBody}>
-                  <Text style={styles.rankedTitle}>{d.short_label}</Text>
-                  <Text style={styles.rankedCat}>{d.category}</Text>
-                </View>
-                <Pressable
-                  onPress={() => removeFromRanked(id)}
-                  hitSlop={10}
-                  style={styles.outBtn}
-                >
-                  <Text style={styles.outBtnTxt}>빼기</Text>
-                </Pressable>
-              </Pressable>
-            );
-          })
+          rankedIds.map((id) => renderDetailCard(id))
         )}
-
-        <View style={styles.hintRow}>
-          <Text style={styles.swapHint}>순위 줄에서 원칙을 한 번 누르면 선택, 다른 것을 누르면 두 자리가 바뀝니다.</Text>
-        </View>
-
-        <Text style={[styles.sectionLabel, styles.sectionSpaced]}>
-          대기 중 ({poolIds.length})
-        </Text>
-        {poolIds.length === 0 ? (
-          <Text style={styles.empty}>
-            {rankedIds.length === TOTAL ? '모든 원칙이 배치되었습니다. 저장을 눌러 주세요.' : '불러오는 중…'}
-          </Text>
-        ) : (
-          <View style={styles.poolWrap}>
-            {poolIds.map((id) => {
-              const d = defaultById[id];
-              if (!d) return null;
-              return (
-                <Pressable
-                  key={id}
-                  onPress={() => addFromPool(id)}
-                  style={({ pressed }) => [styles.poolChip, pressed && styles.poolChipPressed]}
-                >
-                  <Text style={styles.poolChipTxt}>{d.short_label}</Text>
-                </Pressable>
-              );
-            })}
-          </View>
-        )}
-
-        <Pressable onPress={fillDefaultOrder} style={styles.fillDefaultBtn}>
-          <Text style={styles.fillDefaultTxt}>기본 순위로 한 번에 채우기</Text>
-        </Pressable>
-
-        {status?.is_configured ? (
-          <Text style={styles.meta}>이미 저장된 설정이 있습니다. 저장하면 전체 순위가 덮어써집니다.</Text>
-        ) : null}
       </ScrollView>
 
       {saveMsg ? (
@@ -293,15 +397,22 @@ export function PrinciplesPriorityEditor({
       ) : null}
 
       <View style={styles.footer}>
+        {!selectionState.canSave ? (
+          <Text style={styles.footerHint}>
+            {!selectionState.chaptersOk && selectionState.missingCats.length > 0
+              ? `미선택: ${selectionState.missingCats.join('·')} · ${rankedIds.length}/${POOL_SIZE}개`
+              : `구역 ${selectionState.chapterFilled}/5 · ${rankedIds.length}/${POOL_SIZE}개`}
+          </Text>
+        ) : null}
         <Pressable
-          style={[styles.saveBtn, (rankedIds.length !== TOTAL || saving) && styles.saveBtnOff]}
+          style={[styles.saveBtn, (!selectionState.canSave || saving) && styles.saveBtnOff]}
           onPress={save}
-          disabled={rankedIds.length !== TOTAL || saving}
+          disabled={!selectionState.canSave || saving}
         >
           {saving ? (
             <ActivityIndicator color="#fff" />
           ) : (
-            <Text style={styles.saveBtnTxt}>저장 (DB 반영)</Text>
+            <Text style={styles.saveBtnTxt}>저장</Text>
           )}
         </Pressable>
       </View>
@@ -310,106 +421,186 @@ export function PrinciplesPriorityEditor({
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1 },
-  center: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
-  hint: { marginTop: 12, fontSize: 14, color: Colors.textSub, fontWeight: '600' },
-  err: { color: '#B91C1C', fontWeight: '700', textAlign: 'center', marginBottom: 12 },
+  root: { flex: 1, backgroundColor: '#FFFFFF' },
+  center: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24, backgroundColor: '#FFFFFF' },
+  hint: { marginTop: 16, fontSize: 14, color: '#666', fontWeight: '600' },
+  err: { color: '#B42318', fontWeight: '700', textAlign: 'center', marginBottom: 12 },
   retryBtn: { paddingVertical: 10, paddingHorizontal: 20 },
-  retryTxt: { color: PRIMARY, fontWeight: '800' },
-  topRow: { flexDirection: 'row', justifyContent: 'flex-end', paddingHorizontal: 4, marginBottom: 4 },
+  retryTxt: { color: PURPLE, fontWeight: '800' },
+  topRow: { flexDirection: 'row', justifyContent: 'flex-end', paddingHorizontal: 8, paddingTop: 6 },
   closeHit: { paddingVertical: 8, paddingHorizontal: 12 },
-  closeTxt: { fontSize: 15, color: PRIMARY, fontWeight: '800' },
-  heroTitle: { fontSize: 20, fontWeight: '800', color: Colors.text, paddingHorizontal: 16 },
+  closeTxt: { fontSize: 14, color: '#333', fontWeight: '700' },
+  heroTitle: {
+    fontSize: 17,
+    fontWeight: '800',
+    color: '#111',
+    paddingHorizontal: 14,
+    marginTop: 2,
+    letterSpacing: -0.2,
+  },
   heroSub: {
-    fontSize: 13,
-    color: Colors.textSub,
-    paddingHorizontal: 16,
-    marginTop: 8,
-    lineHeight: 19,
-    fontWeight: '600',
+    fontSize: 11,
+    color: '#666',
+    paddingHorizontal: 14,
+    marginTop: 4,
+    lineHeight: 15,
+    fontWeight: '500',
+  },
+  progressTrack: {
+    height: 2,
+    backgroundColor: '#EDE4F7',
+    marginHorizontal: 14,
+    marginTop: 6,
+    borderRadius: 2,
+    overflow: 'hidden',
+  },
+  progressFill: {
+    height: '100%',
+    backgroundColor: PURPLE,
+    borderRadius: 2,
   },
   warnBanner: {
-    marginHorizontal: 16,
-    marginTop: 10,
+    marginHorizontal: 14,
+    marginTop: 6,
     padding: 10,
-    borderRadius: 8,
-    backgroundColor: '#FEF3C7',
+    borderRadius: 10,
     borderWidth: 1,
-    borderColor: '#FCD34D',
+    borderColor: '#E8D4A8',
+    backgroundColor: '#FFF9E6',
   },
-  warnTxt: { fontSize: 13, color: '#92400E', fontWeight: '700' },
-  scroll: { flex: 1, marginTop: 12 },
-  scrollContent: { paddingHorizontal: 16, paddingBottom: 24 },
-  sectionLabel: { fontSize: 14, fontWeight: '800', color: PRIMARY, marginBottom: 10 },
-  sectionSpaced: { marginTop: 22 },
-  empty: { fontSize: 13, color: Colors.textSub, lineHeight: 19, fontWeight: '600', marginBottom: 8 },
-  rankedRow: {
+  warnTxt: { fontSize: 12, color: '#5C4A00', fontWeight: '700' },
+  statusStrip: {
+    marginHorizontal: 14,
+    marginTop: 4,
+    paddingVertical: 4,
+    paddingHorizontal: 0,
+  },
+  statusStripTxt: {
+    color: '#444',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  scroll: { flex: 1, marginTop: 4 },
+  scrollContent: { paddingBottom: 28 },
+  categoryBlock: {
+    marginTop: 10,
+  },
+  categoryBlockFirst: {
+    marginTop: 2,
+  },
+  categoryTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#111',
+    marginBottom: 5,
+  },
+  chipRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'flex-start',
+  },
+  chip: {
+    alignSelf: 'flex-start',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#D0D0D0',
+    backgroundColor: '#FFFFFF',
+    paddingVertical: 6,
+    paddingHorizontal: 6,
+    justifyContent: 'center',
+  },
+  chipSelected: {
+    borderColor: PURPLE,
+    borderWidth: 1,
+  },
+  chipPressed: {
+    opacity: 0.88,
+  },
+  chipDisabled: {
+    opacity: 0.4,
+  },
+  chipLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#555',
+    textAlign: 'center',
+    lineHeight: 14,
+    ...(Platform.OS === 'android' ? { includeFontPadding: false } : null),
+  },
+  chipLabelSelected: {
+    color: PURPLE,
+  },
+  sectionLabel: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#111',
+    marginTop: 14,
+    marginBottom: 8,
+  },
+  empty: { fontSize: 13, color: '#666', lineHeight: 20, fontWeight: '500', marginBottom: 8 },
+  detailCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#E8E8E8',
+    padding: 14,
+    marginBottom: 12,
+  },
+  detailHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
+  detailTitleRow: { flexDirection: 'row', flex: 1, marginRight: 8 },
+  detailRank: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: PURPLE,
+    width: 28,
+    marginTop: 0,
+  },
+  detailTitleBody: { flex: 1 },
+  detailTitle: { fontSize: 15, fontWeight: '800', color: '#1A1A1A' },
+  catPill: {
+    alignSelf: 'flex-start',
+    marginTop: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+    backgroundColor: '#F7F7F7',
+    borderRadius: 8,
+  },
+  catPillTxt: { fontSize: 10, fontWeight: '700', color: '#666' },
+  removeTxt: { fontSize: 13, fontWeight: '700', color: '#999' },
+  toggleRow: {
+    marginTop: 10,
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 12,
-    paddingHorizontal: 12,
-    marginBottom: 8,
-    borderRadius: 12,
-    backgroundColor: Colors.card,
-    borderWidth: 2,
-    borderColor: Colors.border,
+    justifyContent: 'flex-end',
   },
-  rankedRowSelected: {
-    borderColor: PRIMARY,
-    backgroundColor: PRIMARY_LIGHT,
-  },
-  rankedRowPressed: { opacity: 0.92 },
-  rankBadge: {
-    width: 28,
-    fontSize: 16,
-    fontWeight: '900',
-    color: PRIMARY,
-    textAlign: 'center',
-  },
-  rankBadgeOn: { color: '#5B21B6' },
-  rankedBody: { flex: 1, paddingHorizontal: 8 },
-  rankedTitle: { fontSize: 15, fontWeight: '800', color: Colors.text },
-  rankedCat: { fontSize: 11, color: Colors.textMuted, marginTop: 4, fontWeight: '700' },
-  outBtn: { paddingVertical: 6, paddingHorizontal: 10 },
-  outBtnTxt: { fontSize: 13, fontWeight: '800', color: Colors.textMuted },
-  hintRow: { marginTop: 6, marginBottom: 4 },
-  swapHint: { fontSize: 12, color: Colors.textMuted, lineHeight: 17, fontWeight: '600' },
-  poolWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  poolChip: {
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 20,
-    backgroundColor: Colors.card,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    marginBottom: 4,
-  },
-  poolChipPressed: {
-    borderColor: PRIMARY,
-    backgroundColor: PRIMARY_LIGHT,
-  },
-  poolChipTxt: { fontSize: 13, fontWeight: '700', color: Colors.text, maxWidth: 280 },
-  fillDefaultBtn: { marginTop: 18, alignSelf: 'flex-start', paddingVertical: 8 },
-  fillDefaultTxt: { fontSize: 14, fontWeight: '800', color: PRIMARY },
-  meta: { marginTop: 14, fontSize: 12, color: Colors.textMuted, fontWeight: '600' },
-  saveBanner: { textAlign: 'center', fontSize: 13, fontWeight: '700', paddingVertical: 8, paddingHorizontal: 16 },
-  saveBannerOk: { color: '#166534', backgroundColor: '#DCFCE7' },
-  saveBannerErr: { color: '#B91C1C', backgroundColor: '#FEF2F2' },
+  saveBanner: { textAlign: 'center', fontSize: 12, fontWeight: '700', paddingVertical: 8, paddingHorizontal: 12 },
+  saveBannerOk: { color: '#14532D', backgroundColor: '#DCFCE7' },
+  saveBannerErr: { color: '#991B1B', backgroundColor: '#FEE2E2' },
   footer: {
-    paddingHorizontal: 16,
+    paddingHorizontal: 20,
     paddingTop: 10,
-    paddingBottom: 12,
-    backgroundColor: Colors.card,
+    paddingBottom: 14,
+    backgroundColor: '#FFFFFF',
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: Colors.border,
+    borderTopColor: '#E5E5E5',
+  },
+  footerHint: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#666',
+    marginBottom: 10,
+    textAlign: 'center',
+    lineHeight: 18,
   },
   saveBtn: {
-    backgroundColor: PRIMARY,
-    borderRadius: 12,
+    backgroundColor: PURPLE,
+    borderRadius: 14,
     paddingVertical: 16,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  saveBtnOff: { backgroundColor: '#D1D5DB' },
+  saveBtnOff: { backgroundColor: '#C4C4C4' },
   saveBtnTxt: { color: '#fff', fontSize: 16, fontWeight: '800' },
 });

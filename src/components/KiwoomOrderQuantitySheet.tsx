@@ -27,8 +27,17 @@ export type KiwoomOrderQuantitySheetProps = {
   onClose: () => void;
   /** 홈 인디케이터 영역 (SafeArea bottom) */
   bottomInset?: number;
-  /** 하단 고정 영역 — 키문이 원칙 코치 해설 */
+  /** 하단 고정 영역 — 키문이 원칙 코치 (매매 직전) */
   kimooniTitle?: string;
+  /** 한 줄 부가 안내(선택) */
+  kimooniScoreLine?: string;
+  /** 원칙 위반 요약 불릿 (최대 2줄 권장, 나머지는 moreCount) */
+  kimooniBullets?: string[];
+  /** 불릿 외 추가 건수 → 공론장에서 확인 */
+  kimooniMoreInForumCount?: number;
+  /** 불릿 아래 안내 문장 */
+  kimooniLead?: string;
+  /** 불릿 미사용 시 긴 본문(기존) */
   kimooniBody?: string;
   /** 공론장으로 이동 (주문 전 원칙 논의) */
   onOpenDebate?: () => void;
@@ -74,6 +83,10 @@ export function KiwoomOrderQuantitySheet({
   onClose,
   bottomInset = 0,
   kimooniTitle,
+  kimooniScoreLine,
+  kimooniBullets,
+  kimooniMoreInForumCount,
+  kimooniLead,
   kimooniBody,
   onOpenDebate,
   loadingBehavior,
@@ -267,7 +280,7 @@ export function KiwoomOrderQuantitySheet({
         </View>
       </ScrollView>
 
-      {(kimooniTitle || kimooniBody) ? (
+      {(kimooniTitle || kimooniBody || (kimooniBullets && kimooniBullets.length > 0)) ? (
         <View style={styles.kimooniBar}>
           <View style={styles.kimooniInner}>
             <Image source={kimooniAvatar} style={styles.kimooniAvatar} resizeMode="cover" />
@@ -275,15 +288,46 @@ export function KiwoomOrderQuantitySheet({
               <Text style={styles.kimooniBarTitle}>{kimooniTitle ?? '키문이 원칙 코치'}</Text>
               {loadingBehavior ? (
                 <Text style={styles.kimooniBarBody}>원칙 점검 결과를 불러오는 중이에요…</Text>
+              ) : kimooniBullets && kimooniBullets.length > 0 ? (
+                <>
+                  {kimooniScoreLine ? (
+                    <Text style={styles.kimooniScore}>{kimooniScoreLine}</Text>
+                  ) : null}
+                  <View style={styles.kimooniBulletBlock}>
+                    {kimooniBullets.map((line, i) => (
+                      <View key={`${i}-${line.slice(0, 12)}`} style={styles.kimooniBulletRow}>
+                        <Text style={styles.kimooniBulletDot}>•</Text>
+                        <Text style={styles.kimooniBulletTxt}>{line}</Text>
+                      </View>
+                    ))}
+                  </View>
+                  {(kimooniMoreInForumCount ?? 0) > 0 ? (
+                    <Text style={styles.kimooniMore}>
+                      + {kimooniMoreInForumCount}개 더 있어요 → 공론장에서 확인
+                    </Text>
+                  ) : null}
+                  {kimooniLead ? <Text style={styles.kimooniLead}>{kimooniLead}</Text> : null}
+                  {onOpenDebate ? (
+                    <Pressable style={styles.kimooniDebateBtnWide} onPress={onOpenDebate}>
+                      <Ionicons name="chatbubbles-outline" size={18} color="#fff" />
+                      <Text style={styles.kimooniDebateBtnWideTxt}>지금 공론장 입장</Text>
+                    </Pressable>
+                  ) : null}
+                </>
               ) : (
-                <Text style={styles.kimooniBarBody}>{kimooniBody ?? ''}</Text>
+                <>
+                  {kimooniScoreLine ? (
+                    <Text style={styles.kimooniScore}>{kimooniScoreLine}</Text>
+                  ) : null}
+                  <Text style={styles.kimooniBarBody}>{kimooniBody ?? ''}</Text>
+                  {onOpenDebate ? (
+                    <Pressable style={styles.kimooniDebateBtnWide} onPress={onOpenDebate}>
+                      <Ionicons name="chatbubbles-outline" size={18} color="#fff" />
+                      <Text style={styles.kimooniDebateBtnWideTxt}>지금 공론장 입장</Text>
+                    </Pressable>
+                  ) : null}
+                </>
               )}
-              {onOpenDebate ? (
-                <Pressable style={styles.kimooniDebateBtn} onPress={onOpenDebate} hitSlop={6}>
-                  <Text style={styles.kimooniDebateBtnTxt}>지금 공론장 입장</Text>
-                  <Ionicons name="chatbubble-ellipses-outline" size={16} color="#5E35B1" />
-                </Pressable>
-              ) : null}
             </View>
           </View>
         </View>
@@ -578,18 +622,32 @@ const styles = StyleSheet.create({
   kimooniTextCol: { flex: 1, gap: 6 },
   kimooniBarTitle: { fontSize: 14, fontWeight: '800', color: '#4A148C' },
   kimooniBarBody: { fontSize: 13, lineHeight: 19, color: '#4A4A5A', fontWeight: '500' },
-  kimooniDebateBtn: {
-    marginTop: 4,
+  kimooniScore: { fontSize: 12, color: '#6A1B9A', fontWeight: '700', marginBottom: 4 },
+  kimooniBulletBlock: { gap: 6 },
+  kimooniBulletRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 6 },
+  kimooniBulletDot: { fontSize: 14, fontWeight: '900', color: '#4A148C', marginTop: 1 },
+  kimooniBulletTxt: { flex: 1, fontSize: 13, lineHeight: 19, color: '#333', fontWeight: '600' },
+  kimooniMore: { fontSize: 12, fontWeight: '700', color: '#5E35B1', marginTop: 4 },
+  kimooniLead: {
+    fontSize: 13,
+    lineHeight: 20,
+    color: '#4A4A5A',
+    fontWeight: '600',
+    marginTop: 8,
+  },
+  kimooniDebateBtnWide: {
+    marginTop: 12,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    alignSelf: 'flex-start',
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    borderRadius: 10,
-    backgroundColor: '#fff',
+    justifyContent: 'center',
+    gap: 8,
+    alignSelf: 'stretch',
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    backgroundColor: '#5E35B1',
   },
-  kimooniDebateBtnTxt: { fontSize: 13, fontWeight: '800', color: '#5E35B1' },
+  kimooniDebateBtnWideTxt: { fontSize: 15, fontWeight: '800', color: '#fff' },
   ctaRow: {
     paddingHorizontal: 14,
     paddingTop: 6,

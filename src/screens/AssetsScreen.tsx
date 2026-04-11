@@ -12,9 +12,9 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Colors } from '../config/colors';
 
 const SECTORS = [
-  { key: '금융',     emoji: '🏦', desc: '뭐라고 설명할지 qa한테 물어보기 \n금리·배당·NIM 중심 가치주' },
-  { key: '정보기술', emoji: '💻', desc: '뭐라고 설명할지 qa한테 물어보기 \nHBM·AI·반도체 업황 사이클' },
-  { key: '필수소비재', emoji: '🛒', desc: '뭐라고 설명할지 qa한테 물어보기 \nK-뷰티·K-푸드·해외 매출' },
+  { key: '금융', desc: '금리·배당·NIM 중심 가치주' },
+  { key: '정보기술', desc: 'HBM·AI·반도체 업황 사이클' },
+  { key: '필수소비재', desc: 'K-뷰티·K-푸드·해외 매출' },
 ];
 
 interface Props {
@@ -221,7 +221,6 @@ export function AssetsScreen({ navigation }: Props) {
               style={({ pressed }) => [styles.sectorBtn, pressed && styles.sectorBtnPressed]}
               onPress={() => enterDebateWithSector(s.key)}
             >
-              <Text style={styles.sectorEmoji}>{s.emoji}</Text>
               <View style={styles.sectorTextWrap}>
                 <Text style={styles.sectorName}>{s.key}</Text>
                 <Text style={styles.sectorDesc}>{s.desc}</Text>
@@ -413,7 +412,6 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   sectorBtnPressed: { backgroundColor: '#F0EEF9' },
-  sectorEmoji: { fontSize: 28 },
   sectorTextWrap: { flex: 1 },
   sectorName: { fontSize: 16, fontWeight: '800', color: '#1A1D2B' },
   sectorDesc: { fontSize: 12, color: '#7A7F93', fontWeight: '600', marginTop: 2 },
