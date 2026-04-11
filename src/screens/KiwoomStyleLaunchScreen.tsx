@@ -13,8 +13,8 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-const BG_TOP = '#120A2A';
-const BG_BOTTOM = '#0a0018';
+/** 스플래시·로고 주변 통일 (간편모드 다크 톤) */
+const SPLASH_BG = '#0F0624';
 const ACCENT_PINK = '#E84D8A';
 const ACCENT_BLUE = '#7D3BDD';
 
@@ -161,10 +161,7 @@ export function KiwoomStyleLaunchScreen({ waitingSession = false }: Props) {
   return (
     <View style={styles.root}>
       <StatusBar style="light" />
-      <LinearGradient
-        colors={[BG_TOP, BG_BOTTOM]}
-        style={[styles.gradient, { paddingTop: insets.top + 10 }]}
-      >
+      <View style={[styles.gradient, { paddingTop: insets.top + 10 }]}>
         <Animated.View
           style={[
             styles.brandRow,
@@ -174,7 +171,7 @@ export function KiwoomStyleLaunchScreen({ waitingSession = false }: Props) {
             },
           ]}
         >
-          <View style={[styles.wordmarkKnockout, KNOCKOUT_WHITE]}>
+          <View style={styles.wordmarkWrap}>
             <Image
               source={IMG_WORDMARK}
               style={styles.wordmarkImg}
@@ -246,21 +243,28 @@ export function KiwoomStyleLaunchScreen({ waitingSession = false }: Props) {
           </View>
           <Text style={styles.pctLabel}>{pct}%</Text>
         </View>
-      </LinearGradient>
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: BG_BOTTOM },
-  gradient: { flex: 1 },
+  root: { flex: 1, backgroundColor: SPLASH_BG },
+  gradient: { flex: 1, backgroundColor: SPLASH_BG },
   brandRow: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 20,
     marginBottom: 20,
   },
-  wordmarkKnockout: { marginRight: 4 },
+  /** PNG 흰 배경은 multiply로 스플래시 톤에 녹임 */
+  wordmarkWrap: {
+    marginRight: 4,
+    backgroundColor: SPLASH_BG,
+    borderRadius: 4,
+    overflow: 'hidden',
+    ...KNOCKOUT_WHITE,
+  },
   wordmarkImg: {
     height: 30,
     width: 148,
@@ -269,6 +273,7 @@ const styles = StyleSheet.create({
     flex: 1,
     width: '100%',
     height: '100%',
+    backgroundColor: SPLASH_BG,
   },
   brandSep: { color: 'rgba(255,255,255,0.35)', marginHorizontal: 8, fontSize: 14 },
   modeText: { color: 'rgba(255,255,255,0.9)', fontSize: 15, fontWeight: '700' },

@@ -4,6 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { PrinciplesPriorityEditor } from '../components/PrinciplesPriorityEditor';
 import { Colors } from '../config/colors';
 import { useUserSession } from '../context/UserSessionContext';
+import { usePrinciplesSetup } from '../context/PrinciplesSetupContext';
 import { notifyPrinciplesSaved } from '../services/principleViolationLedger';
 
 interface Props {
@@ -13,10 +14,12 @@ interface Props {
 /** 메뉴: 투자 판단 설정 — 챕터별 1개↑·최소 5개·최대 23개, 저장 시 `principles.setup` 반영 */
 export function PrinciplesScreen({ navigation }: Props) {
   const { userId, ready, error: sessionErr } = useUserSession();
+  const { refreshNeedsPrinciplesSetup } = usePrinciplesSetup();
 
   const onPrinciplesSaved = useCallback(() => {
     if (userId) void notifyPrinciplesSaved(userId);
-  }, [userId]);
+    void refreshNeedsPrinciplesSetup();
+  }, [userId, refreshNeedsPrinciplesSetup]);
 
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>

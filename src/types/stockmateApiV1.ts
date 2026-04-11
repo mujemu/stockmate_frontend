@@ -155,14 +155,40 @@ export type BehaviorLogCreateBody = {
   context_data?: Record<string, unknown> | null;
 };
 
+/** POST /behavior-logs — 원칙별 서버 생성 충돌 사유 */
+export type OrderPrincipleViolationDetailDto = {
+  short_label: string;
+  default_rank: number;
+  reason: string;
+};
+
 export type BehaviorLogCreateResponse = {
   log: BehaviorLogDto;
   intervention_message: string | null;
   violated_principles: string[] | null;
+  violation_details?: OrderPrincipleViolationDetailDto[] | null;
 };
 
 export type PatchBehaviorLogStateBody = { state: InterventionState };
 export type PatchBehaviorLogDecisionBody = { decision: UserDecision };
+
+export type ViolationsRemainingBody = {
+  user_id: string;
+  excluded_short_labels: string[];
+};
+
+export type ViolationsRemainingResponse = {
+  violations: OrderPrincipleViolationDetailDto[];
+};
+
+export type ForumTopicTitlePatchBody = {
+  user_id: string;
+  title: string;
+};
+
+export type RefreshOrderPrincipleSummaryResponse = {
+  title: string;
+};
 
 export type AnalysisCreateBody = {
   user_id: string;

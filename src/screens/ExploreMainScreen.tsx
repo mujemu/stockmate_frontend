@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
   Image,
   Pressable,
@@ -8,7 +8,9 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { CommonActions } from '@react-navigation/native';
+import { CommonActions, useFocusEffect } from '@react-navigation/native';
+import { PrinciplesSetupPromptModal } from '../components/PrinciplesSetupPromptModal';
+import { usePrinciplesSetup } from '../context/PrinciplesSetupContext';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Colors } from '../config/colors';
@@ -107,6 +109,23 @@ function isNegativeChange(chg: string): boolean {
 export function ExploreMainScreen({ navigation }: Props) {
   const [activeRankTab, setActiveRankTab] = useState(0);
   const [activeMasterAgeTab, setActiveMasterAgeTab] = useState(0);
+  const { needsPrinciplesSetup } = usePrinciplesSetup();
+  const [showPrinciplesPrompt, setShowPrinciplesPrompt] = useState(false);
+
+  /** 탭이 포커스된 뒤에만 타이머 — `useIsFocused` 초깃값 false로 타이머가 안 걸리던 경우 방지 */
+  useFocusEffect(
+    useCallback(() => {
+      if (!needsPrinciplesSetup) {
+        setShowPrinciplesPrompt(false);
+        return undefined;
+      }
+      const t = setTimeout(() => setShowPrinciplesPrompt(true), 3000);
+      return () => {
+        clearTimeout(t);
+        setShowPrinciplesPrompt(false);
+      };
+    }, [needsPrinciplesSetup]),
+  );
 
   const openForumDebate = (item: typeof RANKS[0]) => {
     navigation.dispatch(
@@ -124,6 +143,7 @@ export function ExploreMainScreen({ navigation }: Props) {
   };
 
   return (
+    <>
     <SafeAreaView style={styles.safe}>
       <ScrollView contentContainerStyle={styles.container}>
         <View style={styles.topHeader}>
@@ -392,7 +412,7 @@ export function ExploreMainScreen({ navigation }: Props) {
         <View style={styles.card}>
           <View style={styles.storyHeaderRow}>
             <View>
-              <Text style={styles.cardSubTitle}>키움이 전해드리는</Text>
+              <Text style={styles.cardSubTitle}>키움이 전해야.  리는</Text>
               <Text style={[styles.cardTitle, styles.storyCardTitle]}>투자 이야기</Text>
             </View>
             <Image
@@ -536,6 +556,11 @@ export function ExploreMainScreen({ navigation }: Props) {
         </Pressable>
       </ScrollView>
     </SafeAreaView>
+    <PrinciplesSetupPromptModal
+      visible={showPrinciplesPrompt}
+      onClose={() => setShowPrinciplesPrompt(false)}
+    />
+    </>
   );
 }
 

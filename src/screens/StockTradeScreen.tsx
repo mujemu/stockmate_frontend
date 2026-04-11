@@ -19,6 +19,8 @@ import { StockExploreSectionDivider } from '../components/stockExplore/StockExpl
 import { StockMyHoldingsSection } from '../components/stockExplore/StockMyHoldingsSection';
 import { StockTradeChartBlock } from '../components/StockTradeChartBlock';
 import { Colors } from '../config/colors';
+import { buildKimooniOrderViolationPreview } from '../config/orderPrincipleViolationCopy';
+import type { OrderPrincipleViolationDetailDto } from '../types/stockmateApiV1';
 import {
   STOCK_TRADE_UI_KEYS,
   getStockOrderModalCopy,
@@ -86,6 +88,7 @@ export function StockTradeScreen({ navigation, route }: Props) {
   const [activeBehaviorLogId, setActiveBehaviorLogId] = useState<string | null>(null);
   const [interventionMessage, setInterventionMessage] = useState<string | null>(null);
   const [violatedPrinciples, setViolatedPrinciples] = useState<string[]>([]);
+  const [violationDetails, setViolationDetails] = useState<OrderPrincipleViolationDetailDto[]>([]);
   const [postTradeLedger, setPostTradeLedger] = useState<ViolationLedger | null>(null);
   const [postTradeViolationsExpanded, setPostTradeViolationsExpanded] = useState(false);
   const [doneLedgerToken, setDoneLedgerToken] = useState(0);
@@ -106,29 +109,25 @@ export function StockTradeScreen({ navigation, route }: Props) {
       ? `${stockName} ${orderType === 'buy' ? '매수' : '매도'}는 설정해 둔 투자 원칙과 맞지 않을 수 있어요.`
       : '지금 표시된 원칙 점검에서는 우선 손볼 만한 충돌 신호는 없어요.';
 
-  const topViolationLabel = violatedPrinciples[0] ?? null;
+  /** 서버가 준 순서(저장한 원칙 순위) 기준 앵커 — 공론장·후속 점검에 전달 */
+  const orderViolationPreview = useMemo(
+    () =>
+      buildKimooniOrderViolationPreview(
+        violatedPrinciples,
+        orderType,
+        interventionMessage,
+        violationDetails,
+      ),
+    [violatedPrinciples, orderType, interventionMessage, violationDetails],
+  );
 
-  const kimooniPreTradeLines = useMemo(() => {
-    if (!hasDecisionViolation) return [] as string[];
-    const out: string[] = [];
-    const iv = interventionMessage?.trim();
-    if (iv) {
-      const parts = iv.split(/\s*·\s*/).map((s) => s.trim()).filter(Boolean);
-      if (parts.length > 1) out.push(...parts);
-      else out.push(iv);
-    }
-    for (const p of violatedPrinciples) {
-      const t = p.trim();
-      if (t && !out.includes(t)) out.push(t);
-    }
-    if (out.length === 0 && hasDecisionViolation) {
-      out.push('이번 주문은 투자 원칙과 맞지 않을 수 있어요.');
-    }
-    return out;
-  }, [hasDecisionViolation, interventionMessage, violatedPrinciples]);
+  const topViolationLabel =
+    orderViolationPreview.primaryLabel ??
+    violatedPrinciples.map((s) => String(s).trim()).find(Boolean) ??
+    null;
 
   const useKimooniBulletMode =
-    hasDecisionViolation && !submittingOrder && kimooniPreTradeLines.length > 0;
+    hasDecisionViolation && !submittingOrder && orderViolationPreview.bullets.length > 0;
 
   const kimooniCoachTitle = hasDecisionViolation
     ? '키문이: 원칙 위반 감지'
@@ -142,8 +141,8 @@ export function StockTradeScreen({ navigation, route }: Props) {
   const kimooniCoachBody = useMemo(() => {
     if (interventionMessage?.trim()) {
       const tail = topViolationLabel
-        ? `\n\n가장 먼저 살펴볼 항목: 「${topViolationLabel}」. 공론장에서 키엉이·키북이와 근거를 나눠 보시겠어요?`
-        : '\n\n공론장에서 근거를 나눠 보시겠어요?';
+        ? `\n\n가장 먼저 짚을 원칙: 「${topViolationLabel}」 — 왜 충돌나는지는 위 한 줄 요약을 참고하고, 공론장에서 키문이와 맞춰 가 보세요.`
+        : '\n\n공론장에서 키문이와 근거를 나눠 보시겠어요?';
       return `${interventionMessage.trim()}${tail}`;
     }
     if (hasDecisionViolation) {
@@ -182,6 +181,7 @@ export function StockTradeScreen({ navigation, route }: Props) {
     setActiveBehaviorLogId(null);
     setInterventionMessage(null);
     setViolatedPrinciples([]);
+    setViolationDetails([]);
     setPostTradeLedger(null);
     setPostTradeViolationsExpanded(false);
     doneLedgerConsumedRef.current = -1;
@@ -206,6 +206,9 @@ export function StockTradeScreen({ navigation, route }: Props) {
         if (bl.log?.id) setActiveBehaviorLogId(bl.log.id);
         setInterventionMessage(bl.intervention_message ?? null);
         setViolatedPrinciples(bl.violated_principles ?? []);
+        setViolationDetails(
+          Array.isArray(bl.violation_details) ? bl.violation_details.filter(Boolean) : [],
+        );
         if (bl.intervention_message && bl.log?.id) {
           StockmateApiV1.behaviorLogs.patchState(bl.log.id, { state: 'delivered' }).catch(() => {});
         }
@@ -286,6 +289,7 @@ export function StockTradeScreen({ navigation, route }: Props) {
           interventionMessage: interventionMessage ?? undefined,
           topViolation: topViolationLabel ?? undefined,
           behaviorLogId: activeBehaviorLogId ?? undefined,
+          violationDetails: violationDetails.length > 0 ? violationDetails : undefined,
         },
       },
     });
@@ -466,9 +470,12 @@ export function StockTradeScreen({ navigation, route }: Props) {
               bottomInset={insets.bottom}
               loadingBehavior={submittingOrder}
               kimooniTitle={kimooniCoachTitle}
-              kimooniBullets={useKimooniBulletMode ? kimooniPreTradeLines.slice(0, 2) : undefined}
+              kimooniScoreLine={
+                hasDecisionViolation && !submittingOrder ? orderViolationPreview.scoreLine : undefined
+              }
+              kimooniBullets={useKimooniBulletMode ? orderViolationPreview.bullets : undefined}
               kimooniMoreInForumCount={
-                useKimooniBulletMode ? Math.max(0, kimooniPreTradeLines.length - 2) : undefined
+                useKimooniBulletMode ? orderViolationPreview.moreInForumCount : undefined
               }
               kimooniLead={useKimooniBulletMode ? kimooniLead : undefined}
               kimooniBody={useKimooniBulletMode ? undefined : kimooniCoachBody}

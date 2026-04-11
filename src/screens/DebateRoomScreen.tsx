@@ -1,12 +1,14 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { DimensionValue } from 'react-native';
 import {
   ActivityIndicator,
   FlatList,
   Keyboard,
+  Modal,
   PanResponder,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -18,13 +20,20 @@ import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../config/colors';
 import {
   type DebateForumEntrySource,
+  type OrderPrincipleViolationDetailIntro,
   buildDebateForumSeedTopic,
   inferDebateForumEntrySource,
 } from '../config/debateForumEntry';
+import { buildOrderPrincipleRecapItemsForDebate } from '../config/orderPrincipleViolationCopy';
 import { ForumHeroStage } from '../components/ForumHeroStage';
 import { useUserSession } from '../context/UserSessionContext';
 import { StockmateApiV1 } from '../services/stockmateApiV1';
-import type { AgentReplyDto, ForumPostOutDto } from '../types/stockmateApiV1';
+import type {
+  AgentReplyDto,
+  ForumPostOutDto,
+  ForumTopicSummaryDto,
+  PrinciplesStatusDto,
+} from '../types/stockmateApiV1';
 
 const IMG_EAGLE   = require('../../assets/debate/eagle.png');
 const IMG_OCTOPUS = require('../../assets/debate/octopus.png');
@@ -110,7 +119,52 @@ function buildFallbackAgentOrder(userMessage: string): AgentId[] {
 type ThreadRow =
   | { kind: 'topic'; id: string; text: string }
   | { kind: 'post';  id: string; userId: string; text: string; mine: boolean }
-  | { kind: 'agent'; id: string; agentId: AgentId; agentName: string; text: string };
+  | { kind: 'agent'; id: string; agentId: AgentId; agentName: string; text: string }
+  | {
+      kind: 'order_principle_recap';
+      id: string;
+      items: { label: string; reasonOneLine: string }[];
+    }
+  | { kind: 'order_cli'; id: string; prompt: string; choices: string[] };
+
+const ORDER_CLI_ROW_ID = 'order-cli-tail';
+const ORDER_PRINCIPLE_RECAP_ID = 'order-principle-recap';
+
+type OrderRecapLine = { label: string; reasonOneLine: string };
+
+/** 점검방: 위반 원칙 요약(recap) 바로 위에, 그 다음 order_cli — 맨 끝에만 붙이도록 정규화 */
+function normalizeOrderPrincipleTail(
+  prev: ThreadRow[],
+  recapItems: OrderRecapLine[],
+  prompt: string,
+  choices: string[],
+): ThreadRow[] {
+  const base = prev.filter((r) => r.kind !== 'order_cli' && r.kind !== 'order_principle_recap');
+  const out: ThreadRow[] = [...base];
+  if (recapItems.length > 0) {
+    out.push({
+      kind: 'order_principle_recap',
+      id: ORDER_PRINCIPLE_RECAP_ID,
+      items: recapItems,
+    });
+  }
+  if (choices.length > 0) {
+    out.push({ kind: 'order_cli', id: ORDER_CLI_ROW_ID, prompt, choices });
+  }
+  return out;
+}
+
+function orderThreadFingerprint(r: ThreadRow[]): string {
+  return r
+    .map((x) => {
+      if (x.kind === 'order_cli') return `O:${x.prompt}\n${x.choices.join('\u0001')}`;
+      if (x.kind === 'order_principle_recap') {
+        return `R:${x.items.map((i) => `${i.label}\u0002${i.reasonOneLine}`).join('\u0003')}`;
+      }
+      return `${x.kind}:${x.id}`;
+    })
+    .join('\n');
+}
 
 /** 주문 확인 흐름에서 공론장으로 넘어올 때 첨부되는 맥락 */
 export type DebateOrderContext = {
@@ -120,10 +174,121 @@ export type DebateOrderContext = {
   interventionMessage?: string;
   topViolation?: string;
   behaviorLogId?: string;
+  violationDetails?: OrderPrincipleViolationDetailIntro[];
 };
 
+const ORDER_CLI_FALLBACKS = ['분할·비중 점검', '손절·익절 기준 점검', '추격 매수·속도 점검'];
+
+/** 맞물릴 수 있는 원칙 카드와 동일한 순서의 짧은 라벨 */
+function orderedRecapLabelsForOrderPrincipleCli(oc: DebateOrderContext | undefined): string[] {
+  return buildOrderPrincipleRecapItemsForDebate(oc)
+    .map((i) => i.label.trim())
+    .filter(Boolean);
+}
+
+/** 「다음 행동」3번 — 위 두 칸과 겹치지 않게 나머지를 불러올 때 사용 */
+const ORDER_CLI_NOT_IN_LIST_CHOICE = '여기에 없어요';
+
+/** 주문 전 점검방 CLI — 위반(리캡 순서) 3개 이상이면 1·2번은 앞 두 위반, 3번은「여기에 없어요」 */
+async function buildOrderPrincipleCliChoices(
+  uid: string,
+  oc: DebateOrderContext | undefined,
+): Promise<string[]> {
+  const recapOrder = orderedRecapLabelsForOrderPrincipleCli(oc);
+  if (recapOrder.length >= 3) {
+    return [recapOrder[0], recapOrder[1], ORDER_CLI_NOT_IN_LIST_CHOICE];
+  }
+
+  const violated = [...new Set((oc?.violatedPrinciples ?? []).map((s) => String(s).trim()).filter(Boolean))];
+  let status: PrinciplesStatusDto | null = null;
+  try {
+    status = await StockmateApiV1.principles.getStatus(uid);
+  } catch {
+    /* 오프라인 */
+  }
+  const rankingLabels = (status?.rankings ?? [])
+    .map((r) => r.short_label?.trim())
+    .filter(Boolean) as string[];
+  const out: string[] = [];
+  for (const v of recapOrder) {
+    if (v && !out.includes(v)) out.push(v);
+    if (out.length >= 3) return out.slice(0, 3);
+  }
+  for (const v of violated) {
+    if (v && !out.includes(v)) out.push(v);
+    if (out.length >= 3) return out.slice(0, 3);
+  }
+  for (const r of rankingLabels) {
+    if (r && !out.includes(r)) out.push(r);
+    if (out.length >= 3) return out.slice(0, 3);
+  }
+  for (const f of ORDER_CLI_FALLBACKS) {
+    if (!out.includes(f)) out.push(f);
+    if (out.length >= 3) break;
+  }
+  return out.slice(0, 3);
+}
+
+function lastOwlFromPosts(posts: ForumPostOutDto[]): string | null {
+  for (let i = posts.length - 1; i >= 0; i--) {
+    if (posts[i].user_id === 'agent:owl') return posts[i].content;
+  }
+  return null;
+}
+
+function lastUserPostContent(posts: ForumPostOutDto[]): string | null {
+  for (let i = posts.length - 1; i >= 0; i--) {
+    const uid = posts[i].user_id;
+    if (!uid.startsWith('agent:')) return posts[i].content;
+  }
+  return null;
+}
+
+/** 키문이 최신 답변·사용자 질문 키워드로 이어질 행동 3개(원칙·시드와 조합) */
+function suggestCliFromContext(
+  lastOwl: string,
+  lastUser: string | null,
+  rankingLabels: string[],
+  violatedSeed: string[],
+): { prompt: string; choices: string[] } {
+  const owl = lastOwl;
+  const user = lastUser ?? '';
+  const pick: string[] = [];
+  const add = (s: string) => {
+    const t = s.trim();
+    if (t && !pick.includes(t)) pick.push(t);
+  };
+  if (/손절|익절|목표가|가격/.test(owl) || /손절|익절/.test(user)) {
+    add('손절·익절 라인만 다시 적기');
+    add('목표 도달 시 행동 한 줄로 정리');
+  }
+  if (/분할|비중|몇\s*%|퍼센트/.test(owl) || /분할|비중/.test(user)) {
+    add('분할 횟수·비중만 다시 잡기');
+  }
+  if (/추격|급등|속도|즉시|FOMO|fomo/i.test(owl) || /추격|급등/.test(user)) {
+    add('쿨다운 후 재검토하기');
+  }
+  if (/감정|멘탈|공포|욕심|마음/.test(owl)) {
+    add('감정 체크 질문 3개 적기');
+  }
+  if (/기록|메모|일지/.test(owl) || /메모|기록/.test(user)) {
+    add('이번 결정 한 줄 메모 남기기');
+  }
+  for (const v of violatedSeed) add(v);
+  for (const r of rankingLabels) add(r);
+  for (const f of ORDER_CLI_FALLBACKS) add(f);
+  add('다음 주문 전에 다시 읽을 한 줄 규칙');
+  add('지금은 정리만 하고 나가기');
+  add('키문이에게 한 가지만 더 물어보기');
+  const choices = pick.slice(0, 3);
+  const prompt = owl.trim()
+    ? '키문이 답변을 바탕으로 이어질 행동 후보예요. 하나만 골라 보내세요.'
+    : '지금 손볼 원칙을 골라 주세요.';
+  return { prompt, choices };
+}
+
 interface Props {
-  navigation: { goBack: () => void };
+  navigation: { goBack: () => void; replace?: (name: string, params?: object) => void };
   route: {
     params?: {
       topicId?: string;
@@ -174,6 +339,8 @@ export function DebateRoomScreen({ navigation, route }: Props) {
   const paramStockName = isSectorOnlyNav ? undefined : raw.stockName;
   const paramNewsBullet = isSectorOnlyNav ? undefined : raw.newsBulletText;
   const orderContext = isSectorOnlyNav ? undefined : raw.orderContext;
+  const orderContextRef = useRef(orderContext);
+  orderContextRef.current = orderContext;
 
   const [keyboardExtraPad, setKeyboardExtraPad] = useState(0);
 
@@ -192,6 +359,22 @@ export function DebateRoomScreen({ navigation, route }: Props) {
   /** 토픽 로드 후 서버 room_kind 로도 판별 (딥링크 등) */
   const [topicOwlOnly, setTopicOwlOnly] = useState(false);
   const owlOnlyMode = isOrderPrincipleNav || topicOwlOnly;
+
+  const orderPrincipleRecapFull = useMemo(
+    () => buildOrderPrincipleRecapItemsForDebate(orderContext),
+    [
+      orderContext?.orderType,
+      JSON.stringify(orderContext?.violatedPrinciples ?? []),
+      JSON.stringify(orderContext?.violationDetails ?? []),
+    ],
+  );
+
+  const [cliPrompt, setCliPrompt] = useState('');
+  const [cliChoices, setCliChoices] = useState<string[]>([]);
+  const [historyVisible, setHistoryVisible] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyTopics, setHistoryTopics] = useState<ForumTopicSummaryDto[]>([]);
+  const rankingLabelsRef = useRef<string[]>([]);
 
   const listRef  = useRef<FlatList>(null);
   const chatHRef = useRef(defaultChatH);
@@ -252,7 +435,7 @@ export function DebateRoomScreen({ navigation, route }: Props) {
   // ── 새 메시지 추가 시 스크롤 ──────────────────────────────────────────────────
   useEffect(() => {
     listRef.current?.scrollToEnd({ animated: true });
-  }, [rows, sending]);
+  }, [rows, sending, cliChoices, cliPrompt, orderPrincipleRecapFull]);
 
   // ── 에이전트 메시지 타이핑 효과 ───────────────────────────────────────────────
   const addAgentTyping = useCallback(
@@ -313,6 +496,62 @@ export function DebateRoomScreen({ navigation, route }: Props) {
     [paramStockName, owlOnlyMode],
   );
 
+  const refreshOrderCli = useCallback(
+    async (lastOwlText: string | null, lastUserText: string | null) => {
+      if (!userId) return;
+      let rankings = rankingLabelsRef.current;
+      if (rankings.length === 0) {
+        try {
+          const s = await StockmateApiV1.principles.getStatus(userId);
+          rankings = (s?.rankings ?? [])
+            .map((r) => r.short_label?.trim())
+            .filter(Boolean) as string[];
+          rankingLabelsRef.current = rankings;
+        } catch {
+          rankings = [];
+        }
+      }
+      const seed = [
+        ...new Set(
+          (orderContextRef.current?.violatedPrinciples ?? [])
+            .map((x) => String(x).trim())
+            .filter(Boolean),
+        ),
+      ];
+      if (!lastOwlText?.trim() && !lastUserText?.trim()) {
+        const choices = await buildOrderPrincipleCliChoices(userId, orderContextRef.current);
+        setCliPrompt(
+          '지금 손볼 원칙을 골라 주세요. 선택하면 키문이에게 전달되고, 아래에서 언제든 나갈 수 있어요.',
+        );
+        setCliChoices(choices);
+        return;
+      }
+      const { prompt, choices } = suggestCliFromContext(
+        lastOwlText ?? '',
+        lastUserText,
+        rankings,
+        seed,
+      );
+      const vio = orderedRecapLabelsForOrderPrincipleCli(orderContextRef.current);
+      const merged =
+        owlOnlyMode && vio.length >= 3 ? [vio[0], vio[1], ORDER_CLI_NOT_IN_LIST_CHOICE] : choices;
+      setCliPrompt(prompt);
+      setCliChoices(merged);
+    },
+    [userId, owlOnlyMode],
+  );
+
+  const refreshOrderPrincipleTopicTitle = useCallback(async () => {
+    const tid = topicId;
+    const uid = userId;
+    if (!owlOnlyMode || !tid || !uid) return;
+    try {
+      await StockmateApiV1.forum.refreshOrderPrincipleSummary(tid, uid, paramStockName ?? null);
+    } catch {
+      /* 목록 제목 갱신 실패는 조용히 */
+    }
+  }, [owlOnlyMode, topicId, userId, paramStockName]);
+
   // ── 스레드 로드 ───────────────────────────────────────────────────────────────
   const loadThread = useCallback(
     async (tid: string, selfUserId: string | null) => {
@@ -322,15 +561,65 @@ export function DebateRoomScreen({ navigation, route }: Props) {
       setViewCount(topic.view_count);
       setTopicId(topic.id);
       setTopicOwlOnly(topic.room_kind === 'order_principle');
-      const intro: ThreadRow = {
-        kind: 'topic',
-        id:   `intro-${topic.id}`,
-        text: `[토론 안내]\n${topic.title}\n\n${topic.content}`,
-      };
-      setRows([intro, ...postsToRows(posts, selfUserId)]);
+      const isOrderPrincipleTopic = topic.room_kind === 'order_principle';
+      /** 업종만 있는 공론장 — 긴 시드 안내는 숨기고 대화(개시 발언)로 바로 진입 */
+      const isSectorForumTopic =
+        !isOrderPrincipleTopic &&
+        Boolean(topic.sector_key?.trim()) &&
+        !String(topic.stock_code ?? '').trim();
+      const postRows = postsToRows(posts, selfUserId);
+      const prefix: ThreadRow[] = [];
+      if (!isOrderPrincipleTopic && !isSectorForumTopic) {
+        prefix.push({
+          kind: 'topic',
+          id: `intro-${topic.id}`,
+          text: `[토론 안내]\n${topic.title}\n\n${topic.content}`,
+        });
+      }
+      setRows([...prefix, ...postRows]);
+      if (isOrderPrincipleTopic && userId) {
+        void refreshOrderCli(lastOwlFromPosts(posts), lastUserPostContent(posts));
+      } else {
+        setCliPrompt('');
+        setCliChoices([]);
+      }
     },
-    [],
+    [userId, refreshOrderCli],
   );
+
+  /** 점검방: CLI를 FlatList 데이터 맨 끝에만 두어, 선택·응답 후에도 대화가 아래로 이어지게 함 */
+  useLayoutEffect(() => {
+    if (!owlOnlyMode || initLoading || !topicId) {
+      setRows((prev) => {
+        const next = prev.filter((r) => r.kind !== 'order_cli' && r.kind !== 'order_principle_recap');
+        if (orderThreadFingerprint(prev) === orderThreadFingerprint(next)) return prev;
+        return next;
+      });
+      return;
+    }
+    const choicesForRow =
+      cliChoices.length > 0 && !sending && !agentReplying ? cliChoices : [];
+    setRows((prev) => {
+      const next = normalizeOrderPrincipleTail(
+        prev,
+        orderPrincipleRecapFull,
+        cliPrompt,
+        choicesForRow,
+      );
+      if (orderThreadFingerprint(prev) === orderThreadFingerprint(next)) return prev;
+      return next;
+    });
+  }, [
+    rows,
+    owlOnlyMode,
+    initLoading,
+    topicId,
+    cliPrompt,
+    cliChoices,
+    sending,
+    agentReplying,
+    orderPrincipleRecapFull,
+  ]);
 
   // ── 초기화 ─────────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -357,15 +646,20 @@ export function DebateRoomScreen({ navigation, route }: Props) {
               : paramStockCode && !isOrderPrincipleNav
                 ? { default_stock_room_only: true as const }
                 : {};
-          const existing = await StockmateApiV1.forum.listTopics({
-            stock_code: paramStockCode ?? undefined,
-            sector_key: !paramStockCode ? (paramSectorKey ?? undefined) : undefined,
-            sector_room_only: sectorRoomOnly,
-            user_id: userId,
-            page_size: 1,
-            ...listExtra,
-          });
-          const existingTopic = existing.items?.[0] ?? null;
+          /** 주문 전 원칙 점검: 매번 새 토픽(이전 대화는 목록에서 열기) */
+          const existingTopic =
+            isOrderPrincipleNav
+              ? null
+              : (
+                  await StockmateApiV1.forum.listTopics({
+                    stock_code: paramStockCode ?? undefined,
+                    sector_key: !paramStockCode ? (paramSectorKey ?? undefined) : undefined,
+                    sector_room_only: sectorRoomOnly,
+                    user_id: userId,
+                    page_size: 1,
+                    ...listExtra,
+                  })
+                ).items?.[0] ?? null;
 
           if (existingTopic) {
             if (cancelled) return;
@@ -399,8 +693,8 @@ export function DebateRoomScreen({ navigation, route }: Props) {
             if (cancelled) return;
             await loadThread(topic.id, userId);
 
-            // 토론 개시 — 에이전트들이 먼저 발언 (타이핑 효과 포함)
-            if (!cancelled) {
+            // 토론 개시 — 주문 전 원칙 점검방은 CLI 선택 우선(자동 개시 생략)
+            if (!cancelled && !isOrderPrincipleNav) {
               try {
                 const opening = await StockmateApiV1.forum.openDebate(topic.id, {
                   stock_name: paramStockName ?? null,
@@ -425,7 +719,9 @@ export function DebateRoomScreen({ navigation, route }: Props) {
       }
     })();
 
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [
     ready,
     userId,
@@ -443,6 +739,137 @@ export function DebateRoomScreen({ navigation, route }: Props) {
   ]);
 
   const BROADCAST_CMD = /^\/(all|전체)\s*/i;
+
+  /** 주문 전 점검방 — CLI 버튼으로 원칙 선택 후 키문이 1회 응답 */
+  const onOrderCliChoice = useCallback(
+    async (shortLabel: string) => {
+      const tid = topicId;
+      const uid = userId;
+      if (!tid || !uid) return;
+      setPostError(null);
+
+      if (shortLabel === ORDER_CLI_NOT_IN_LIST_CHOICE) {
+        setSending(true);
+        try {
+          const full = buildOrderPrincipleRecapItemsForDebate(orderContextRef.current);
+          const excluded = full.slice(0, 2).map((x) => x.label.trim()).filter(Boolean);
+          const bid = orderContextRef.current?.behaviorLogId;
+          let remainder: string[] = [];
+          if (bid) {
+            const { violations } = await StockmateApiV1.behaviorLogs.violationsRemaining(bid, {
+              user_id: uid,
+              excluded_short_labels: excluded,
+            });
+            remainder = violations.map((v) => String(v.short_label || '').trim()).filter(Boolean);
+          } else {
+            remainder = full.slice(2).map((x) => x.label.trim()).filter(Boolean);
+          }
+          setCliPrompt(
+            '앞의 두 가지를 제외한 나머지 어긋난 원칙이에요. 설명받을 항목을 골라 주세요.',
+          );
+          if (remainder.length === 0) {
+            const back = await buildOrderPrincipleCliChoices(uid, orderContextRef.current);
+            setCliChoices(back);
+            setCliPrompt(
+              '같은 주문 기준으로 추가로 짚을 어긋남이 없어요. 위 두 가지 중 하나를 고르거나 메시지를 보내 주세요.',
+            );
+          } else {
+            setCliChoices(remainder);
+          }
+        } catch (e) {
+          const full = buildOrderPrincipleRecapItemsForDebate(orderContextRef.current);
+          const fallback = full.slice(2).map((x) => x.label.trim()).filter(Boolean);
+          setPostError(e instanceof Error ? e.message : String(e));
+          if (fallback.length > 0) {
+            setCliPrompt(
+              '앞의 두 가지를 제외한 나머지 어긋난 원칙이에요. 설명받을 항목을 골라 주세요.',
+            );
+            setCliChoices(fallback);
+          } else {
+            try {
+              const back = await buildOrderPrincipleCliChoices(uid, orderContextRef.current);
+              setCliChoices(back);
+            } catch {
+              setCliChoices([]);
+            }
+            setCliPrompt('나머지 목록을 불러오지 못했어요. 잠시 후 다시 눌러 주세요.');
+          }
+        } finally {
+          setSending(false);
+        }
+        return;
+      }
+
+      setSending(true);
+      setAgentReplying(true);
+      const content = `[원칙 점검] 「${shortLabel}」부터 기준을 다시 맞출게요.`;
+      try {
+        const post = await StockmateApiV1.forum.createPost(tid, { user_id: uid, content });
+        setRows((prev) => [
+          ...prev,
+          { kind: 'post', id: post.id, userId: post.user_id, text: post.content, mine: true },
+        ]);
+        const reply1 = await requestAgentReplyWithFallback(tid, content);
+        await addAgentTyping(
+          reply1.agent_id as AgentId,
+          reply1.agent_name,
+          reply1.content,
+          reply1.post.id,
+        );
+        void refreshOrderCli(reply1.content, content);
+        void refreshOrderPrincipleTopicTitle();
+      } catch (e) {
+        setPostError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setSending(false);
+        setAgentReplying(false);
+      }
+    },
+    [
+      topicId,
+      userId,
+      requestAgentReplyWithFallback,
+      addAgentTyping,
+      refreshOrderCli,
+      refreshOrderPrincipleTopicTitle,
+    ],
+  );
+
+  const openOrderHistory = useCallback(async () => {
+    if (!userId || !paramStockCode) return;
+    setHistoryVisible(true);
+    setHistoryLoading(true);
+    try {
+      const res = await StockmateApiV1.forum.listTopics({
+        user_id: userId,
+        stock_code: paramStockCode,
+        room_kind: 'order_principle',
+        page_size: 40,
+        page: 1,
+      });
+      setHistoryTopics(res.items ?? []);
+    } catch {
+      setHistoryTopics([]);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, [userId, paramStockCode]);
+
+  const onPickHistoryTopic = useCallback(
+    (item: ForumTopicSummaryDto) => {
+      setHistoryVisible(false);
+      if (navigation.replace) {
+        navigation.replace('DebateRoom', {
+          forumEntrySource: 'order_principle_check',
+          topicId: item.id,
+          stockCode: paramStockCode,
+          stockName: paramStockName,
+          sectorKey: paramSectorKey,
+        });
+      }
+    },
+    [navigation, paramStockCode, paramStockName, paramSectorKey],
+  );
 
   // ── 메시지 전송 ───────────────────────────────────────────────────────────────
   const onSend = async () => {
@@ -467,6 +894,7 @@ export function DebateRoomScreen({ navigation, route }: Props) {
       try {
         if (broadcastAll) {
           const broadcastIds: AgentId[] = owlOnlyMode ? ['owl'] : [...AGENT_IDS];
+          let lastOwl: string | null = null;
           for (const agentId of broadcastIds) {
             try {
               const reply = await StockmateApiV1.forum.agentReply(topicId, {
@@ -474,6 +902,7 @@ export function DebateRoomScreen({ navigation, route }: Props) {
                 stock_name: paramStockName ?? null,
                 agent_id: agentId,
               });
+              if (reply.agent_id === 'owl') lastOwl = reply.content;
               await addAgentTyping(
                 reply.agent_id as AgentId,
                 reply.agent_name,
@@ -484,6 +913,10 @@ export function DebateRoomScreen({ navigation, route }: Props) {
               /* 한 캐릭터 실패 시 다음으로 */
             }
           }
+          if (owlOnlyMode && lastOwl) {
+            void refreshOrderCli(lastOwl, content);
+            void refreshOrderPrincipleTopicTitle();
+          }
         } else {
           const reply1 = await requestAgentReplyWithFallback(topicId, content);
           await addAgentTyping(
@@ -492,6 +925,10 @@ export function DebateRoomScreen({ navigation, route }: Props) {
             reply1.content,
             reply1.post.id,
           );
+          if (owlOnlyMode) {
+            void refreshOrderCli(reply1.content, content);
+            void refreshOrderPrincipleTopicTitle();
+          }
 
           if (!owlOnlyMode) {
             try {
@@ -547,6 +984,62 @@ export function DebateRoomScreen({ navigation, route }: Props) {
 
   // ── 말풍선 렌더 ───────────────────────────────────────────────────────────────
   const renderItem = ({ item }: { item: ThreadRow }) => {
+    if (item.kind === 'order_principle_recap') {
+      const full = orderPrincipleRecapFull;
+      const recapSub =
+        full.length >= 3
+          ? '어긋난 원칙을 모두 보여 드려요. 1·2번과 다른 부분을 짚고 싶으면「다음 행동」3번「여기에 없어요」를 눌러 주세요.'
+          : '아래「다음 행동」에서 이어질 행동을 골라 주세요.';
+      return (
+        <View style={styles.msgRow}>
+          <View style={styles.recapCard}>
+            <Text style={styles.recapCardTitle}>맞물릴 수 있는 원칙</Text>
+            <Text style={styles.recapCardSub}>{recapSub}</Text>
+            <View style={styles.recapList}>
+              {item.items.map((row, idx) => (
+                <View
+                  key={`${idx}-${row.label.slice(0, 20)}`}
+                  style={[styles.recapLine, idx > 0 ? styles.recapLineSep : null]}
+                >
+                  <Text style={styles.recapLineIdx}>{idx + 1}</Text>
+                  <View style={styles.recapLineBody}>
+                    <Text style={styles.recapOneLine} numberOfLines={2}>
+                      <Text style={styles.recapBold}>「{row.label}」</Text>
+                      {' — '}
+                      {row.reasonOneLine}
+                    </Text>
+                  </View>
+                </View>
+              ))}
+            </View>
+          </View>
+        </View>
+      );
+    }
+    if (item.kind === 'order_cli') {
+      const busy = sending || agentReplying;
+      return (
+        <View style={styles.msgRow}>
+          <View style={[styles.cliPanel, styles.cliInlinePanel]}>
+            <Text style={styles.cliHeaderLabel}>다음 행동</Text>
+            <View style={styles.cliPromptWrap}>
+              <Text style={styles.cliPrompt}>{item.prompt}</Text>
+            </View>
+            {item.choices.map((c, idx) => (
+              <Pressable
+                key={`${idx}-${c.slice(0, 24)}`}
+                style={({ pressed }) => [styles.cliBtn, (pressed || busy) && styles.cliBtnPressed]}
+                onPress={() => void onOrderCliChoice(c)}
+                disabled={busy}
+              >
+                <Text style={styles.cliBtnIdx}>{idx + 1}</Text>
+                <Text style={styles.cliBtnTxt}>{c}</Text>
+              </Pressable>
+            ))}
+          </View>
+        </View>
+      );
+    }
     if (item.kind === 'topic') {
       return (
         <View style={styles.msgRow}>
@@ -585,6 +1078,13 @@ export function DebateRoomScreen({ navigation, route }: Props) {
       </View>
     );
   };
+
+  const listFooter = (
+    <View style={styles.listFooterCol}>
+      {sending ? <Text style={styles.thinking}>메시지 전송 중…</Text> : null}
+      {agentReplying ? <Text style={styles.thinking}>AI 에이전트가 답변 중이에요…</Text> : null}
+    </View>
+  );
 
   // ── 렌더 ──────────────────────────────────────────────────────────────────────
   return (
@@ -630,18 +1130,27 @@ export function DebateRoomScreen({ navigation, route }: Props) {
             style={styles.chatList}
             contentContainerStyle={[
               styles.chatListContent,
+              owlOnlyMode && topicId ? styles.chatListContentNoGrow : styles.chatListContentGrow,
               { paddingBottom: 28 + keyboardExtraPad },
             ]}
             keyboardShouldPersistTaps="handled"
             keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
             renderItem={renderItem}
-            ListFooterComponent={
-              sending       ? <Text style={styles.thinking}>메시지 전송 중…</Text>
-              : agentReplying ? <Text style={styles.thinking}>AI 에이전트가 답변 중이에요…</Text>
-              : null
-            }
+            ListFooterComponent={listFooter}
           />
         )}
+
+        {owlOnlyMode && topicId && !initLoading ? (
+          <Pressable
+            style={styles.exitStrip}
+            onPress={() => navigation.goBack()}
+            accessibilityRole="button"
+            accessibilityLabel="점검 마치고 나가기"
+          >
+            <Ionicons name="exit-outline" size={18} color={Colors.primary} />
+            <Text style={styles.exitStripTxt}>점검 마치고 나가기</Text>
+          </Pressable>
+        ) : null}
 
         <View style={[styles.inputBar, { paddingBottom: Math.max(insets.bottom, 10) }]}>
           <Ionicons name="chatbubbles-outline" size={24} color="#B0A8D0" style={styles.inputIcon} />
@@ -682,8 +1191,79 @@ export function DebateRoomScreen({ navigation, route }: Props) {
           <Text style={styles.serviceTitle}>인공지능 비즈니스 분석 서비스</Text>
           <Text style={styles.screenTitle} numberOfLines={1}>{topicTitle}</Text>
         </View>
-        <View style={styles.backHit} />
+        {owlOnlyMode && paramStockCode ? (
+          <Pressable
+            onPress={() => void openOrderHistory()}
+            hitSlop={12}
+            style={styles.backHit}
+            accessibilityRole="button"
+            accessibilityLabel="이전 점검 대화 목록"
+          >
+            <Ionicons name="list-outline" size={26} color="#fff" />
+          </Pressable>
+        ) : (
+          <View style={styles.backHit} />
+        )}
       </View>
+
+      <Modal
+        visible={historyVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setHistoryVisible(false)}
+      >
+        <View style={styles.historyOverlay}>
+          <Pressable style={styles.historyBackdropPress} onPress={() => setHistoryVisible(false)} />
+          <View style={styles.historyCardWrap} pointerEvents="box-none">
+            <View style={styles.historyCard}>
+            <View style={styles.historyCardHeader}>
+              <Text style={styles.historyCardTitle}>이전 점검 대화</Text>
+              <Pressable hitSlop={10} onPress={() => setHistoryVisible(false)}>
+                <Ionicons name="close" size={26} color="#3A3060" />
+              </Pressable>
+            </View>
+            {historyLoading ? (
+              <View style={styles.historyLoading}>
+                <ActivityIndicator color={Colors.primary} />
+              </View>
+            ) : historyTopics.length === 0 ? (
+              <Text style={styles.historyEmpty}>저장된 점검 대화가 없어요.</Text>
+            ) : (
+              <ScrollView style={styles.historyScroll} keyboardShouldPersistTaps="handled">
+                {historyTopics.map((item) => {
+                  const active = item.id === topicId;
+                  const when = new Date(item.created_at).toLocaleString('ko-KR', {
+                    month: 'short',
+                    day: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  });
+                  return (
+                    <Pressable
+                      key={item.id}
+                      style={({ pressed }) => [
+                        styles.historyRow,
+                        active && styles.historyRowActive,
+                        pressed && styles.historyRowPressed,
+                      ]}
+                      onPress={() => onPickHistoryTopic(item)}
+                    >
+                      <Text style={styles.historyRowTitle} numberOfLines={2}>
+                        {item.title || '점검 대화'}
+                      </Text>
+                      <Text style={styles.historyRowMeta}>
+                        {when}
+                        {active ? ' · 현재' : ''}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </ScrollView>
+            )}
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -734,13 +1314,97 @@ const styles = StyleSheet.create({
   topTitles:    { flex: 1, alignItems: 'center' },
   serviceTitle: { color: 'rgba(255,255,255,0.85)', fontSize: 11, fontWeight: '700' },
   screenTitle:  { color: '#fff', fontSize: 18, fontWeight: '900', marginTop: 2 },
+  listFooterCol: { paddingBottom: 8, gap: 6, alignSelf: 'stretch' },
+  chatListContentGrow: { flexGrow: 1 },
+  chatListContentNoGrow: { flexGrow: 0 },
+  cliInlinePanel: { marginTop: 4, marginBottom: 2 },
+  recapCard: {
+    alignSelf: 'stretch',
+    backgroundColor: Colors.card,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#D5DADF',
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    marginBottom: 2,
+  },
+  recapCardTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#0D5DBA',
+    marginBottom: 4,
+  },
+  recapCardSub: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#6B7280',
+    marginBottom: 10,
+    lineHeight: 16,
+  },
+  recapList: { gap: 0 },
+  recapLine: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    paddingVertical: 8,
+  },
+  recapLineSep: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#E5E7EB',
+  },
+  recapLineIdx: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#0B5BB5',
+    minWidth: 18,
+    paddingTop: 2,
+  },
+  recapLineBody: { flex: 1, minWidth: 0 },
+  recapOneLine: { fontSize: 13, lineHeight: 20, fontWeight: '600', color: '#1A1A1A' },
+  recapBold: { fontWeight: '800', color: '#111827' },
+  historyOverlay: { flex: 1 },
+  historyBackdropPress: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.45)' },
+  historyCardWrap: { flex: 1, justifyContent: 'flex-end' },
+  historyCard: {
+    backgroundColor: '#FFFCFF',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 24,
+    maxHeight: '72%',
+    borderTopWidth: 1,
+    borderColor: '#E8E2F5',
+  },
+  historyCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  historyCardTitle: { fontSize: 17, fontWeight: '900', color: '#2A2540' },
+  historyLoading: { paddingVertical: 32, alignItems: 'center' },
+  historyEmpty: { fontSize: 14, color: '#8B82B0', fontWeight: '600', paddingVertical: 20 },
+  historyScroll: { maxHeight: 420 },
+  historyRow: {
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    backgroundColor: '#F5F1FC',
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: '#E8E2F5',
+  },
+  historyRowActive: { borderColor: Colors.primary, backgroundColor: '#EDE6FB' },
+  historyRowPressed: { opacity: 0.88 },
+  historyRowTitle: { fontSize: 15, fontWeight: '800', color: '#2A2540' },
+  historyRowMeta: { fontSize: 12, color: '#8B82B0', fontWeight: '600', marginTop: 6 },
   centerPad:    { flex: 1, justifyContent: 'center', paddingVertical: 24 },
   chatList:     { flex: 1, marginTop: 6, minHeight: 60 },
   chatListContent: {
     paddingHorizontal: 14,
     paddingTop: 10,
     paddingBottom: 12,
-    flexGrow: 1,
   },
   msgRow:      { marginBottom: 12 },
   msgLeft:     { alignItems: 'flex-start' },
@@ -750,6 +1414,64 @@ const styles = StyleSheet.create({
   bubble:         { maxWidth: '88%', borderRadius: 14, paddingHorizontal: 12, paddingVertical: 10 },
   topicBubble:    { backgroundColor: '#EEE9FB', borderWidth: 1, borderColor: '#DDD5F5', alignSelf: 'stretch', maxWidth: '100%' },
   topicBubbleText:{ color: '#3A3060', fontSize: 13, lineHeight: 20, fontWeight: '600' },
+  /** 키움 간편모드 느낌: 흰 바탕·회색 구분선·블루 포인트 */
+  cliPanel: {
+    alignSelf: 'stretch',
+    maxWidth: '100%',
+    backgroundColor: Colors.card,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#D5DADF',
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    gap: 10,
+  },
+  cliHeaderLabel: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#0D5DBA',
+    letterSpacing: -0.2,
+  },
+  cliPromptWrap: {
+    backgroundColor: Colors.background,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: Colors.border,
+  },
+  cliPrompt: { color: Colors.text, fontSize: 13, lineHeight: 20, fontWeight: '600' },
+  cliBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#C9CFD8',
+    backgroundColor: Colors.card,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+  },
+  cliBtnPressed: { backgroundColor: '#F0F2F5' },
+  cliBtnIdx: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#0B5BB5',
+    minWidth: 22,
+    textAlign: 'center',
+  },
+  cliBtnTxt: { flex: 1, color: '#1A1A1A', fontSize: 14, lineHeight: 20, fontWeight: '600' },
+  exitStrip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 10,
+    backgroundColor: 'rgba(255,255,255,0.92)',
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#E0DCF0',
+  },
+  exitStripTxt: { fontSize: 14, fontWeight: '800', color: Colors.primary },
   agentBubble:    { backgroundColor: '#F0EEF9', borderWidth: 1, borderColor: '#DDD8F0' },
   agentAIBubble:  { backgroundColor: '#EAE4FB', borderWidth: 1, borderColor: '#C8B8F5' },
   userBubble:     { backgroundColor: Colors.primary },

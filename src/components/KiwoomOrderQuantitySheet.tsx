@@ -280,7 +280,10 @@ export function KiwoomOrderQuantitySheet({
         </View>
       </ScrollView>
 
-      {(kimooniTitle || kimooniBody || (kimooniBullets && kimooniBullets.length > 0)) ? (
+      {(kimooniTitle ||
+        kimooniBody ||
+        (kimooniBullets && kimooniBullets.length > 0) ||
+        Boolean(kimooniScoreLine?.trim())) ? (
         <View style={styles.kimooniBar}>
           <View style={styles.kimooniInner}>
             <Image source={kimooniAvatar} style={styles.kimooniAvatar} resizeMode="cover" />

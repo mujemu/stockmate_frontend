@@ -9,12 +9,20 @@ export type DebateForumEntrySource =
   | 'news'
   | 'order_principle_check';
 
+export type OrderPrincipleViolationDetailIntro = {
+  short_label: string;
+  default_rank: number;
+  reason: string;
+};
+
 export type DebateOrderContextForIntro = {
   fromOrderFlow?: boolean;
   orderType?: 'buy' | 'sell';
   violatedPrinciples?: string[];
   interventionMessage?: string;
   topViolation?: string;
+  /** POST /behavior-logs 의 violation_details (서버 사유) */
+  violationDetails?: OrderPrincipleViolationDetailIntro[];
 };
 
 export type BuildDebateForumSeedArgs = {
@@ -61,32 +69,8 @@ export function buildDebateForumSeedTopic(a: BuildDebateForumSeedArgs): { title:
   switch (a.entry) {
     case 'order_principle_check': {
       const title = sn ? `${sn} · 주문 전 원칙 점검` : sc ? `종목 ${sc} · 주문 전 원칙 점검` : '주문 전 원칙 점검';
-      const orderSide = oc?.orderType === 'sell' ? '매도' : oc?.orderType === 'buy' ? '매수' : '매수/매도';
-      const intervention = oc?.interventionMessage?.trim();
-      const topV = oc?.topViolation?.trim();
-      const vlist = oc?.violatedPrinciples?.filter(Boolean).length
-        ? oc!.violatedPrinciples!.join(', ')
-        : null;
-      const content = lines(
-        '[이 방의 성격 — 주문 직전 원칙 점검에서 연 토론방]',
-        '매수·매도 확인 화면에서 키문이가 행동 로그·투자 원칙을 요약했고, 그 결과를 바탕으로 공론장으로 안내되었습니다.',
-        '',
-        '【무엇이 문제로 지적됐는지】',
-        `· 검토하려던 주문: ${orderSide}`,
-        intervention ? `· 키문이 코멘트(개입 메시지): ${intervention}` : '· 키문이 코멘트: (별도 개입 문구 없음)',
-        topV ? `· 우선 점검 원칙: ${topV}` : null,
-        vlist ? `· 함께 표시된 관련 원칙: ${vlist}` : null,
-        '',
-        '【이 방에서 할 일】',
-        '이 방은 **키문이(원칙 코치)만** 응답합니다. 매수·매도 지시는 하지 않으며,',
-        '아래에 정리된 점검 내용과 본인이 설정한 투자 원칙을 연결해 스스로 판단할 수 있도록 질문으로 돕습니다.',
-        '',
-        '【참고 맥락】',
-        sn || sc || sk
-          ? `종목: ${sn ?? '—'} / 종목코드: ${sc ?? '—'} / 섹터: ${sk ?? '—'}`
-          : null,
-      );
-      return { title, content };
+      /** 본문은 DB not-null용 최소값만 — 실제 안내는 앱에서 CLI 패널로 표시 */
+      return { title, content: '·' };
     }
     case 'stock': {
       const title = sn ? `${sn} 종목 토론` : sc ? `종목 토론 · ${sc}` : '종목 토론';
@@ -105,26 +89,10 @@ export function buildDebateForumSeedTopic(a: BuildDebateForumSeedArgs): { title:
     }
     case 'sector': {
       const title = sk ? `${sk} 토론` : '업종 토론';
-      const sectorVoice =
-        sk === '금융'
-          ? '금리·NIM·배당·규제·부실채권 등 금융 업종 공통 변수가 중심입니다. 키엉이는 정책·수급 이슈, 키북이는 자본·수익성 지표, 키문이는 레버리지·원칙(비중·분할) 관점에서 질문합니다.'
-          : sk === '정보기술'
-            ? '반도체·IT 업황 사이클, HBM·AI, 수출 규제 등이 중심입니다. 키엉이는 업황·뉴스, 키북이는 CAPEX·재고·가격 지표, 키문이는 변동성·추격매수 편향을 짚습니다.'
-            : sk === '필수소비재'
-              ? '브랜드·해외 소비·원자재·면세 등 방어 업종 공통 테마가 중심입니다. 키엉이는 소비·유통 이슈, 키북이는 마진·해외매출 비중, 키문이는 “방어주=무조건 안전” 맹신을 질문합니다.'
-              : '동일 업종·테마 안의 사이클·정책·밸류를 논의하는 업종 공론장입니다.';
-      const content = lines(
-        `[이 방의 성격 — ${sk ?? '업종'} 공론장 (종목 전용 방이 아님)]`,
-        '한 기업 실적만 파헤치는 종목 토론과 달리, 이 방은 같은 업종 안에서 공통으로 작동하는 사이클·정책·밸류 밴드·리더/팔로워 관계를 다룹니다.',
-        sk === '금융'
-          ? '금융 업종은 은행·증권·보험 등 여러 하위 업권이 함께 움직입니다. 특정 증권사 한 곳만 이야기하는 것이 아니라, 금리·NIM·배당·규제·부실채권 등 업종 공통 변수를 중심으로 논의해 주세요.'
-          : null,
-        sectorVoice,
-        '',
-        '개별 종목 이슈는 “이 업종 전체에 왜 중요한지”와 연결해 말해 주세요. 특정 종목 매매를 권유하는 표현은 삼가 주세요.',
-        '',
-        sk ? `대상 업종: ${sk}` : null,
-      );
+      /** DB not-null용 최소 본문 — 앱에서는 업종 공론 안내 버블을 숨기고 개시 발언으로 시작 */
+      const content = sk
+        ? `[업종 공론장] ${sk} 업종 전체 이야기입니다. 아래에서 키엉이·키북이·키문이가 차례로 짧게 시작합니다.`
+        : '[업종 공론장] 아래 대화로 시작합니다.';
       return { title, content };
     }
     case 'news': {

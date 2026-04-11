@@ -14,6 +14,10 @@ import type {
   BehaviorLogCreateBody,
   BehaviorLogCreateResponse,
   BehaviorLogDto,
+  ViolationsRemainingBody,
+  ViolationsRemainingResponse,
+  ForumTopicTitlePatchBody,
+  RefreshOrderPrincipleSummaryResponse,
   ComplianceMonthDto,
   CreateUserBody,
   ForumPostCreateBody,
@@ -165,6 +169,16 @@ export const StockmateApiV1 = {
       );
       return data;
     },
+    async violationsRemaining(
+      logId: string,
+      body: ViolationsRemainingBody,
+    ): Promise<ViolationsRemainingResponse> {
+      const { data } = await httpV1.post<ViolationsRemainingResponse>(
+        `${V}/behavior-logs/${logId}/violations-remaining`,
+        body,
+      );
+      return data;
+    },
   },
 
   analysis: {
@@ -245,6 +259,25 @@ export const StockmateApiV1 = {
     },
     async getTopic(topicId: string): Promise<ForumTopicOutDto> {
       const { data } = await httpV1.get<ForumTopicOutDto>(`${V}/forum/topics/${topicId}`);
+      return data;
+    },
+    async patchTopicTitle(topicId: string, body: ForumTopicTitlePatchBody): Promise<ForumTopicOutDto> {
+      const { data } = await httpV1.patch<ForumTopicOutDto>(
+        `${V}/forum/topics/${topicId}/title`,
+        body,
+      );
+      return data;
+    },
+    async refreshOrderPrincipleSummary(
+      topicId: string,
+      userId: string,
+      stockName?: string | null,
+    ): Promise<RefreshOrderPrincipleSummaryResponse> {
+      const { data } = await httpV1.post<RefreshOrderPrincipleSummaryResponse>(
+        `${V}/forum/topics/${topicId}/refresh-order-principle-summary`,
+        {},
+        { params: { user_id: userId, stock_name: stockName ?? undefined } },
+      );
       return data;
     },
     async deleteTopic(topicId: string, userId: string): Promise<unknown> {

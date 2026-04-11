@@ -92,7 +92,7 @@ function ExploreStackNavigator() {
 function MainTabs() {
   return (
     <Tab.Navigator
-      initialRouteName="Menu"
+      initialRouteName="Explore"
       detachInactiveScreens={false}
       screenOptions={{
         headerShown: false,
