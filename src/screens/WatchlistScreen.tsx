@@ -1,21 +1,74 @@
 import React from 'react';
-import { View, Text, StyleSheet, ScrollView, Image } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Image, Pressable } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Colors } from '../config/colors';
 
+/** 탐색 랭킹(`ExploreMainScreen` RANKS)과 동일 식별자·표시 */
 const WATCHLIST = [
-  { name: '삼성전자', price: '202,500원', change: '-3.80%', logo: require('../../assets/logos/samsung.png') },
-  { name: '아모레퍼시픽', price: '129,000원', change: '-1.00%', logo: require('../../assets/logos/amorepacific.png') },
-  { name: '에이피알', price: '362,500원', change: '+8.05%', logo: require('../../assets/logos/apr.png') },
-  { name: 'SK하이닉스', price: '994,000원', change: '-3.78%', logo: require('../../assets/logos/skhynix.png') },
-  { name: '키움증권', price: '447,000원', change: '-2.72%', logo: require('../../assets/logos/kiwoom.png') },
+  {
+    name: '삼성전자',
+    stockCode: '005930',
+    sectorKey: '정보기술',
+    price: '202,500원',
+    change: '-3.80%',
+    logo: require('../../assets/logos/samsung.png'),
+  },
+  {
+    name: '아모레퍼시픽',
+    stockCode: '090430',
+    sectorKey: '필수소비재',
+    price: '129,000원',
+    change: '-1.00%',
+    logo: require('../../assets/logos/amorepacific.png'),
+  },
+  {
+    name: '에이피알',
+    stockCode: '278470',
+    sectorKey: '필수소비재',
+    price: '362,500원',
+    change: '+8.05%',
+    logo: require('../../assets/logos/apr.png'),
+  },
+  {
+    name: 'SK하이닉스',
+    stockCode: '000660',
+    sectorKey: '정보기술',
+    price: '994,000원',
+    change: '-3.78%',
+    logo: require('../../assets/logos/skhynix.png'),
+  },
+  {
+    name: '키움증권',
+    stockCode: '039490',
+    sectorKey: '금융',
+    price: '447,000원',
+    change: '-2.72%',
+    logo: require('../../assets/logos/kiwoom.png'),
+  },
 ];
+
+interface Props {
+  navigation: any;
+}
 
 function isNegativeChange(change: string): boolean {
   return /^[-−]/.test(change.trim());
 }
 
-export function WatchlistScreen() {
+export function WatchlistScreen({ navigation }: Props) {
+  const goStockTrade = (item: (typeof WATCHLIST)[number]) => {
+    navigation.navigate('Explore', {
+      screen: 'StockTrade',
+      params: {
+        stockName: item.name,
+        stockCode: item.stockCode,
+        sectorKey: item.sectorKey,
+        stockPrice: item.price,
+        stockChange: item.change,
+      },
+    });
+  };
+
   return (
     <SafeAreaView style={styles.safe}>
       <ScrollView contentContainerStyle={styles.container}>
@@ -35,7 +88,13 @@ export function WatchlistScreen() {
             <Text style={styles.menuIcon}>≡</Text>
           </View>
           {WATCHLIST.map((item) => (
-            <View key={item.name} style={styles.row}>
+            <Pressable
+              key={item.name}
+              style={styles.row}
+              onPress={() => goStockTrade(item)}
+              accessibilityRole="button"
+              accessibilityLabel={`${item.name} 종목 상세`}
+            >
               <View style={styles.logoWrap}>
                 <Image source={item.logo} style={styles.logo} resizeMode="cover" />
               </View>
@@ -48,7 +107,7 @@ export function WatchlistScreen() {
                   {item.change}
                 </Text>
               </View>
-            </View>
+            </Pressable>
           ))}
         </View>
       </ScrollView>

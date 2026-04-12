@@ -43,6 +43,10 @@ export type KiwoomOrderQuantitySheetProps = {
   onOpenDebate?: () => void;
   /** 행동 로그·개입 문구 로딩 중 */
   loadingBehavior?: boolean;
+  /** 매도 불가 등으로 주문 버튼 비활성 */
+  submitDisabled?: boolean;
+  /** 비활성 시 CTA 위 한 줄 안내 */
+  submitDisabledReason?: string;
 };
 
 function changeColor(chg: string) {
@@ -90,6 +94,8 @@ export function KiwoomOrderQuantitySheet({
   kimooniBody,
   onOpenDebate,
   loadingBehavior,
+  submitDisabled = false,
+  submitDisabledReason,
 }: KiwoomOrderQuantitySheetProps) {
   const accent = orderType === 'buy' ? '#E53935' : '#5C6BC0';
   const kimooniAvatar = require('../../assets/services/guard_octopus.png');
@@ -337,8 +343,16 @@ export function KiwoomOrderQuantitySheet({
       </ScrollView>
 
       <View style={[styles.ctaRow, { paddingBottom: 56 + bottomInset }]}>
+        {submitDisabledReason ? (
+          <Text style={styles.ctaDisabledHint}>{submitDisabledReason}</Text>
+        ) : null}
         <Pressable
-          style={[styles.ctaBtn, orderType === 'buy' ? styles.ctaBuy : styles.ctaSell]}
+          disabled={submitDisabled}
+          style={[
+            styles.ctaBtn,
+            orderType === 'buy' ? styles.ctaBuy : styles.ctaSell,
+            submitDisabled && styles.ctaBtnDisabled,
+          ]}
           onPress={onSubmit}
         >
           <Text style={styles.ctaBtnTxt}>{orderType === 'buy' ? '살게요' : '팔게요'}</Text>
@@ -661,6 +675,14 @@ const styles = StyleSheet.create({
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: '#DCDDE4',
   },
+  ctaDisabledHint: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#6B7280',
+    textAlign: 'center',
+    marginBottom: 10,
+    paddingHorizontal: 4,
+  },
   ctaBtn: {
     borderRadius: 16,
     paddingVertical: 16,
@@ -669,5 +691,6 @@ const styles = StyleSheet.create({
   },
   ctaBuy: { backgroundColor: '#FF5579' },
   ctaSell: { backgroundColor: '#6F64F2' },
+  ctaBtnDisabled: { opacity: 0.42 },
   ctaBtnTxt: { color: '#fff', fontSize: 30, fontWeight: '800' },
 });

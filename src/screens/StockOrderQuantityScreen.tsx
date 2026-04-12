@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Image,
@@ -21,6 +21,7 @@ import { navigationRef } from '../navigation/navigationRef';
 import type { ViolationLedger } from '../services/principleViolationLedger';
 import { recordPostTradeViolation } from '../services/principleViolationLedger';
 import { StockmateApiV1 } from '../services/stockmateApiV1';
+import { findSimulatedHolding } from '../utils/simulatedHoldingMatch';
 
 const STOCK_LOGO: Record<string, ReturnType<typeof require>> = {
   키움증권: require('../../assets/logos/kiwoom.png'),
@@ -46,6 +47,8 @@ type Props = {
       sectorKey?: string;
       stockPrice?: string;
       stockChange?: string;
+      /** 매도 시 보유 수량(없으면 화면에서 잔고 API로 조회) */
+      ownedQuantity?: number;
     };
   };
 };
@@ -60,7 +63,13 @@ export function StockOrderQuantityScreen({ navigation, route }: Props) {
   const stockPriceParam = route.params?.stockPrice;
   const stockPrice = stockPriceParam ?? '212,000원';
   const stockChange = route.params?.stockChange ?? '+7.89%';
-  const [orderType, setOrderType] = useState<'buy' | 'sell'>(route.params?.orderType === 'sell' ? 'sell' : 'buy');
+  const orderType: 'buy' | 'sell' = route.params?.orderType === 'sell' ? 'sell' : 'buy';
+
+  const paramOwnedQty = route.params?.ownedQuantity;
+  const [sellableQty, setSellableQty] = useState<number | 'loading'>(() => {
+    if (orderType !== 'sell') return 0;
+    return typeof paramOwnedQty === 'number' ? paramOwnedQty : 'loading';
+  });
 
   const defaultLimitPrice = useMemo(
     () => resolveStockOrderPriceWon(stockName, stockPriceParam),
@@ -82,6 +91,81 @@ export function StockOrderQuantityScreen({ navigation, route }: Props) {
   const [postTradeViolationsExpanded, setPostTradeViolationsExpanded] = useState(false);
   const [doneLedgerToken, setDoneLedgerToken] = useState(0);
   const doneLedgerConsumedRef = useRef(-1);
+
+  useEffect(() => {
+    if (orderType !== 'sell') {
+      setSellableQty(0);
+      return;
+    }
+    if (!userReady || !userId) return;
+    const po = route.params?.ownedQuantity;
+    if (typeof po === 'number') {
+      setSellableQty(po);
+      return;
+    }
+    let cancel = false;
+    setSellableQty('loading');
+    (async () => {
+      try {
+        const list = await StockmateApiV1.holdings.listSimulated(userId);
+        if (cancel) return;
+        const h = findSimulatedHolding(list, stockName, stockCode);
+        setSellableQty(h?.quantity ?? 0);
+      } catch {
+        if (!cancel) setSellableQty(0);
+      }
+    })();
+    return () => {
+      cancel = true;
+    };
+  }, [orderType, userReady, userId, stockName, stockCode, route.params?.ownedQuantity]);
+
+  useEffect(() => {
+    if (orderType !== 'sell' || sellableQty === 'loading') return;
+    const cap = sellableQty;
+    setQuantity((prev) => {
+      if (cap <= 0) return '0';
+      const cur = parseInt(String(prev).replace(/\D/g, '') || '0', 10);
+      const v = !Number.isFinite(cur) || cur < 1 ? 1 : cur;
+      return String(Math.min(v, cap));
+    });
+  }, [orderType, sellableQty]);
+
+  const onQuantityChangeSafe = useCallback(
+    (q: string) => {
+      if (orderType !== 'sell' || sellableQty === 'loading') {
+        setQuantity(q);
+        return;
+      }
+      if (typeof sellableQty !== 'number' || sellableQty <= 0) {
+        setQuantity('0');
+        return;
+      }
+      const digits = String(q).replace(/\D/g, '');
+      if (!digits) {
+        setQuantity('');
+        return;
+      }
+      let n = parseInt(digits, 10);
+      if (!Number.isFinite(n)) {
+        setQuantity('');
+        return;
+      }
+      n = Math.min(n, sellableQty);
+      setQuantity(String(n));
+    },
+    [orderType, sellableQty],
+  );
+
+  const sellSubmitBlocked =
+    orderType === 'sell' &&
+    (sellableQty === 'loading' || (typeof sellableQty === 'number' && sellableQty <= 0));
+  const sellSubmitHint =
+    orderType === 'sell' && sellableQty === 'loading'
+      ? '잔고를 확인하는 중이에요…'
+      : orderType === 'sell' && typeof sellableQty === 'number' && sellableQty <= 0
+        ? '보유하지 않은 종목은 매도할 수 없어요.'
+        : undefined;
 
   const totalPrice = useMemo(() => {
     const qty = parseInt(quantity || '0', 10);
@@ -223,7 +307,14 @@ export function StockOrderQuantityScreen({ navigation, route }: Props) {
 
   const onQuantitySheetConfirm = async () => {
     setPostTradeViolationsExpanded(false);
-    const qty = Math.max(1, parseInt(quantity || '1', 10) || 1);
+    let qty = Math.max(1, parseInt(quantity || '1', 10) || 1);
+    if (orderType === 'sell') {
+      if (sellableQty === 'loading') return;
+      const cap = typeof sellableQty === 'number' ? sellableQty : 0;
+      if (cap <= 0) return;
+      qty = Math.min(qty, cap);
+      if (qty < 1) return;
+    }
     const priceWon = parseInt(limitPrice || '0', 10) || 0;
     if (userReady && userId) {
       try {
@@ -293,11 +384,13 @@ export function StockOrderQuantityScreen({ navigation, route }: Props) {
           limitPriceWon={limitPrice}
           onLimitPriceChange={setLimitPrice}
           quantity={quantity}
-          onQuantityChange={setQuantity}
+          onQuantityChange={onQuantityChangeSafe}
           onSubmit={onQuantitySheetConfirm}
           onClose={exitOrderScreen}
           bottomInset={insets.bottom}
           loadingBehavior={submittingOrder}
+          submitDisabled={sellSubmitBlocked}
+          submitDisabledReason={sellSubmitHint}
           kimooniTitle={kimooniCoachTitle}
           kimooniScoreLine={
             hasDecisionViolation && !submittingOrder ? orderViolationPreview.scoreLine : undefined
@@ -328,12 +421,6 @@ export function StockOrderQuantityScreen({ navigation, route }: Props) {
               showsVerticalScrollIndicator={false}
               bounces={false}
             >
-              <Text style={[styles.modalTitle, styles.doneTitle]}>
-                {orderType === 'buy' ? '모의 매수 체결이 완료되었어요' : '모의 매도 체결이 완료되었어요'}
-              </Text>
-              <Text style={styles.doneDisclaimer}>
-                실제 주문은 전송되지 않았고, 원칙 점검 스냅샷만 서버(Supabase)에 저장됐어요.
-              </Text>
               <View style={styles.stockBrief}>
                 {stockLogo != null ? (
                   <Image source={stockLogo} style={styles.stockBriefLogo} resizeMode="contain" />
@@ -452,17 +539,6 @@ const styles = StyleSheet.create({
     marginTop: 30,
     maxHeight: '82%',
   },
-  modalTitle: { fontSize: 28, fontWeight: '800', color: Colors.text, marginBottom: 12 },
-  doneTitle: { color: Colors.primary, textAlign: 'center' },
-  doneDisclaimer: {
-    fontSize: 13,
-    color: '#5C6068',
-    fontWeight: '600',
-    textAlign: 'center',
-    marginTop: 8,
-    lineHeight: 19,
-    paddingHorizontal: 8,
-  },
   primaryBtn: {
     borderRadius: 12,
     backgroundColor: Colors.primary,
@@ -491,6 +567,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
+    marginTop: 4,
     marginBottom: 12,
   },
   logoMock: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#DCE0EE' },

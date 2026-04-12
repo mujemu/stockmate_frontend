@@ -1,6 +1,6 @@
 import { useFocusEffect } from '@react-navigation/native';
 import React, { useCallback, useState } from 'react';
-import { Image, Pressable, ScrollView, StatusBar, StyleSheet, Text, View } from 'react-native';
+import { Alert, Image, Pressable, ScrollView, StatusBar, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { StockDailyFluctuationAlertCard } from '../components/stockExplore/StockDailyFluctuationAlertCard';
@@ -12,6 +12,7 @@ import { STOCK_TRADE_UI_KEYS, getStockTradeUi } from '../config/stockTradeDetail
 import { useUserSession } from '../context/UserSessionContext';
 import { StockmateApiV1 } from '../services/stockmateApiV1';
 import type { SimulatedHoldingDto } from '../types/stockmateApiV1';
+import { findSimulatedHolding } from '../utils/simulatedHoldingMatch';
 
 interface Props {
   navigation: any;
@@ -52,13 +53,41 @@ export function StockTradeScreen({ navigation, route }: Props) {
   );
 
   const openInput = (type: 'buy' | 'sell') => {
+    if (type === 'sell') {
+      const h = findSimulatedHolding(holdings, stockName, stockCode);
+      if (!h || h.quantity <= 0) {
+        Alert.alert('매도 불가', '보유하지 않은 종목은 매도할 수 없어요.');
+        return;
+      }
+      navigation.navigate('StockOrderQuantity', {
+        orderType: 'sell',
+        stockName,
+        stockCode,
+        sectorKey,
+        stockPrice: stockPriceParam ?? `${h.last_mark_won.toLocaleString('ko-KR')}원`,
+        stockChange,
+        ownedQuantity: h.quantity,
+      });
+      return;
+    }
     navigation.navigate('StockOrderQuantity', {
-      orderType: type,
+      orderType: 'buy',
       stockName,
       stockCode,
       sectorKey,
       stockPrice: stockPriceParam,
       stockChange,
+    });
+  };
+
+  const navigateSellHolding = (h: SimulatedHoldingDto) => {
+    navigation.navigate('StockOrderQuantity', {
+      orderType: 'sell',
+      stockName: h.stock_name,
+      stockCode: h.stock_code ?? undefined,
+      stockPrice: `${h.last_mark_won.toLocaleString('ko-KR')}원`,
+      stockChange: `${h.pnl_pct >= 0 ? '+' : ''}${h.pnl_pct.toFixed(2)}%`,
+      ownedQuantity: h.quantity,
     });
   };
 
@@ -184,7 +213,11 @@ export function StockTradeScreen({ navigation, route }: Props) {
         )}
         <StockDailyFluctuationAlertCard />
         <StockExploreSectionDivider />
-        <StockMyHoldingsSection holdings={holdings} highlightStockName={stockName} />
+        <StockMyHoldingsSection
+          holdings={holdings}
+          highlightStockName={stockName}
+          onPressHoldingRow={navigateSellHolding}
+        />
         <View style={styles.card}>
           <Text style={styles.sectionTitle}>종목정보</Text>
           {useBuiltUi && d ? (

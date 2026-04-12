@@ -16,6 +16,8 @@ type Props = {
   onPressCollectCta?: () => void;
   onPressOrders?: () => void;
   onPressPending?: () => void;
+  /** 잔고 행 탭 → 해당 종목 매도 수량 화면 */
+  onPressHoldingRow?: (h: SimulatedHoldingDto) => void;
 };
 
 export function StockMyHoldingsSection({
@@ -26,6 +28,7 @@ export function StockMyHoldingsSection({
   onPressCollectCta,
   onPressOrders,
   onPressPending,
+  onPressHoldingRow,
 }: Props) {
   const [tab, setTab] = useState<HoldingsTab>('general');
 
@@ -101,8 +104,8 @@ export function StockMyHoldingsSection({
           </Text>
           {sortedHoldings.map((h) => {
             const hi = highlightStockName && h.stock_name === highlightStockName;
-            return (
-              <View key={`${h.stock_name}-${h.stock_code ?? ''}`} style={[styles.hRow, hi && styles.hRowHi]}>
+            const rowInner = (
+              <>
                 <View style={styles.hLogo}>
                   <Text style={styles.hLogoTxt}>{h.stock_name.slice(0, 1)}</Text>
                 </View>
@@ -124,6 +127,25 @@ export function StockMyHoldingsSection({
                     {h.pnl_won.toLocaleString('ko-KR')} ({h.pnl_pct.toFixed(2)}%)
                   </Text>
                 </View>
+              </>
+            );
+            const key = `${h.stock_name}-${h.stock_code ?? ''}`;
+            if (onPressHoldingRow) {
+              return (
+                <Pressable
+                  key={key}
+                  style={[styles.hRow, hi && styles.hRowHi]}
+                  onPress={() => onPressHoldingRow(h)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${h.stock_name} 매도`}
+                >
+                  {rowInner}
+                </Pressable>
+              );
+            }
+            return (
+              <View key={key} style={[styles.hRow, hi && styles.hRowHi]}>
+                {rowInner}
               </View>
             );
           })}

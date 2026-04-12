@@ -38,6 +38,19 @@ export function AssetsScreen({ navigation }: Props) {
   const openSectorModal = () => setSectorModalVisible(true);
   const openReport = () => navigation.getParent()?.navigate('OwlReport' as never);
 
+  /** 탐색에서 종목 눌렀을 때와 동일하게 종목 상세(차트·내종목)로 진입 */
+  const openStockTradeFromHolding = (h: SimulatedHoldingDto) => {
+    navigation.navigate('Explore' as never, {
+      screen: 'StockTrade',
+      params: {
+        stockName: h.stock_name,
+        stockCode: h.stock_code ?? undefined,
+        stockPrice: `${h.last_mark_won.toLocaleString('ko-KR')}원`,
+        stockChange: `${h.pnl_pct >= 0 ? '+' : ''}${h.pnl_pct.toFixed(2)}%`,
+      },
+    } as never);
+  };
+
   const enterDebateWithSector = (sectorKey: string) => {
     setSectorModalVisible(false);
     // merge: false — 이전 공론장 진입의 종목·주문 params 가 남지 않도록 전체 교체
@@ -226,7 +239,13 @@ export function AssetsScreen({ navigation }: Props) {
                   : ''}
               </Text>
               {simTotals.rows.map((h) => (
-                <View key={`${h.stock_name}-${h.stock_code ?? ''}`} style={styles.holdingLine}>
+                <Pressable
+                  key={`${h.stock_name}-${h.stock_code ?? ''}`}
+                  style={styles.holdingLine}
+                  onPress={() => openStockTradeFromHolding(h)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${h.stock_name} 종목 상세`}
+                >
                   <View style={styles.hLogoSmall}>
                     <Text style={styles.hLogoSmallTxt}>{h.stock_name.slice(0, 1)}</Text>
                   </View>
@@ -248,7 +267,7 @@ export function AssetsScreen({ navigation }: Props) {
                       {h.pnl_won.toLocaleString('ko-KR')} ({h.pnl_pct.toFixed(2)}%)
                     </Text>
                   </View>
-                </View>
+                </Pressable>
               ))}
               <Pressable style={styles.moreGhost} accessibilityRole="button">
                 <Text style={styles.moreGhostTxt}>더보기</Text>
