@@ -23,7 +23,7 @@ export type KiwoomOrderQuantitySheetProps = {
   onLimitPriceChange?: (wonDigits: string) => void;
   quantity: string;
   onQuantityChange: (q: string) => void;
-  onSubmit: () => void;
+  onSubmit: () => void | Promise<void>;
   onClose: () => void;
   /** 홈 인디케이터 영역 (SafeArea bottom) */
   bottomInset?: number;
@@ -278,65 +278,65 @@ export function KiwoomOrderQuantitySheet({
             />
           </View>
         </View>
-      </ScrollView>
 
-      {(kimooniTitle ||
-        kimooniBody ||
-        (kimooniBullets && kimooniBullets.length > 0) ||
-        Boolean(kimooniScoreLine?.trim())) ? (
-        <View style={styles.kimooniBar}>
-          <View style={styles.kimooniInner}>
-            <Image source={kimooniAvatar} style={styles.kimooniAvatar} resizeMode="cover" />
-            <View style={styles.kimooniTextCol}>
-              <Text style={styles.kimooniBarTitle}>{kimooniTitle ?? '키문이 원칙 코치'}</Text>
-              {loadingBehavior ? (
-                <Text style={styles.kimooniBarBody}>원칙 점검 결과를 불러오는 중이에요…</Text>
-              ) : kimooniBullets && kimooniBullets.length > 0 ? (
-                <>
-                  {kimooniScoreLine ? (
-                    <Text style={styles.kimooniScore}>{kimooniScoreLine}</Text>
-                  ) : null}
-                  <View style={styles.kimooniBulletBlock}>
-                    {kimooniBullets.map((line, i) => (
-                      <View key={`${i}-${line.slice(0, 12)}`} style={styles.kimooniBulletRow}>
-                        <Text style={styles.kimooniBulletDot}>•</Text>
-                        <Text style={styles.kimooniBulletTxt}>{line}</Text>
-                      </View>
-                    ))}
-                  </View>
-                  {(kimooniMoreInForumCount ?? 0) > 0 ? (
-                    <Text style={styles.kimooniMore}>
-                      + {kimooniMoreInForumCount}개 더 있어요 → 공론장에서 확인
-                    </Text>
-                  ) : null}
-                  {kimooniLead ? <Text style={styles.kimooniLead}>{kimooniLead}</Text> : null}
-                  {onOpenDebate ? (
-                    <Pressable style={styles.kimooniDebateBtnWide} onPress={onOpenDebate}>
-                      <Ionicons name="chatbubbles-outline" size={18} color="#fff" />
-                      <Text style={styles.kimooniDebateBtnWideTxt}>지금 공론장 입장</Text>
-                    </Pressable>
-                  ) : null}
-                </>
-              ) : (
-                <>
-                  {kimooniScoreLine ? (
-                    <Text style={styles.kimooniScore}>{kimooniScoreLine}</Text>
-                  ) : null}
-                  <Text style={styles.kimooniBarBody}>{kimooniBody ?? ''}</Text>
-                  {onOpenDebate ? (
-                    <Pressable style={styles.kimooniDebateBtnWide} onPress={onOpenDebate}>
-                      <Ionicons name="chatbubbles-outline" size={18} color="#fff" />
-                      <Text style={styles.kimooniDebateBtnWideTxt}>지금 공론장 입장</Text>
-                    </Pressable>
-                  ) : null}
-                </>
-              )}
+        {(kimooniTitle ||
+          kimooniBody ||
+          (kimooniBullets && kimooniBullets.length > 0) ||
+          Boolean(kimooniScoreLine?.trim())) ? (
+          <View style={styles.kimooniBar}>
+            <View style={styles.kimooniInner}>
+              <Image source={kimooniAvatar} style={styles.kimooniAvatar} resizeMode="cover" />
+              <View style={styles.kimooniTextCol}>
+                <Text style={styles.kimooniBarTitle}>{kimooniTitle ?? '키문이 원칙 코치'}</Text>
+                {loadingBehavior ? (
+                  <Text style={styles.kimooniBarBody}>원칙 점검 결과를 불러오는 중이에요…</Text>
+                ) : kimooniBullets && kimooniBullets.length > 0 ? (
+                  <>
+                    {kimooniScoreLine ? (
+                      <Text style={styles.kimooniScore}>{kimooniScoreLine}</Text>
+                    ) : null}
+                    <View style={styles.kimooniBulletBlock}>
+                      {kimooniBullets.map((line, i) => (
+                        <View key={`${i}-${line.slice(0, 12)}`} style={styles.kimooniBulletRow}>
+                          <Text style={styles.kimooniBulletDot}>•</Text>
+                          <Text style={styles.kimooniBulletTxt}>{line}</Text>
+                        </View>
+                      ))}
+                    </View>
+                    {(kimooniMoreInForumCount ?? 0) > 0 ? (
+                      <Text style={styles.kimooniMore}>
+                        + {kimooniMoreInForumCount}개 더 있어요 → 공론장에서 확인
+                      </Text>
+                    ) : null}
+                    {kimooniLead ? <Text style={styles.kimooniLead}>{kimooniLead}</Text> : null}
+                    {onOpenDebate ? (
+                      <Pressable style={styles.kimooniDebateBtnWide} onPress={onOpenDebate}>
+                        <Ionicons name="chatbubbles-outline" size={18} color="#fff" />
+                        <Text style={styles.kimooniDebateBtnWideTxt}>지금 공론장 입장</Text>
+                      </Pressable>
+                    ) : null}
+                  </>
+                ) : (
+                  <>
+                    {kimooniScoreLine ? (
+                      <Text style={styles.kimooniScore}>{kimooniScoreLine}</Text>
+                    ) : null}
+                    <Text style={styles.kimooniBarBody}>{kimooniBody ?? ''}</Text>
+                    {onOpenDebate ? (
+                      <Pressable style={styles.kimooniDebateBtnWide} onPress={onOpenDebate}>
+                        <Ionicons name="chatbubbles-outline" size={18} color="#fff" />
+                        <Text style={styles.kimooniDebateBtnWideTxt}>지금 공론장 입장</Text>
+                      </Pressable>
+                    ) : null}
+                  </>
+                )}
+              </View>
             </View>
           </View>
-        </View>
-      ) : null}
+        ) : null}
+      </ScrollView>
 
-      <View style={[styles.ctaRow, { paddingBottom: 10 + bottomInset }]}>
+      <View style={[styles.ctaRow, { paddingBottom: 56 + bottomInset }]}>
         <Pressable
           style={[styles.ctaBtn, orderType === 'buy' ? styles.ctaBuy : styles.ctaSell]}
           onPress={onSubmit}
@@ -357,7 +357,8 @@ const styles = StyleSheet.create({
   scroll: { flex: 1 },
   scrollContent: {
     paddingTop: 0,
-    paddingBottom: 8,
+    /** 고정 CTA 위로 호가·수량·키문이 블록을 끝까지 스크롤 */
+    paddingBottom: 24,
   },
   topBar: {
     flexDirection: 'row',
@@ -604,9 +605,11 @@ const styles = StyleSheet.create({
   turtleDesc: { fontSize: 13, lineHeight: 19, color: '#5E6478' },
   turtleHint: { marginTop: 8, fontSize: 12, color: '#6A5ACD', fontWeight: '700' },
   kimooniBar: {
-    marginTop: -30,
+    marginTop: 16,
+    marginHorizontal: 0,
     paddingHorizontal: 12,
-    paddingTop: 2,
+    paddingTop: 8,
+    paddingBottom: 4,
     backgroundColor: '#EDE7F6',
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: '#D1C4E9',

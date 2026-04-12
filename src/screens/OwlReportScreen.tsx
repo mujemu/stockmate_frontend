@@ -1,14 +1,8 @@
 /**
- * OwlReportScreen — 투자 원칙 준수 대시보드
- * 키움증권 간편모드 스타일: 밝은 배경, 카드 중심, 핵심 정보만
- *
- * 데이터 흐름:
- *  1. principles.getStatus   → 내 원칙 목록 (랭킹순)
- *  2. behaviorLogs.listByUser → 최근 거래 행동 로그
- *  3. reports.getCompliance  → 이달 준수율
- *  → 클라이언트에서 종목별 준수/위반 집계
+ * OwlReportScreen — 투자 원칙 리포트 (키움증권 간편모드 톤)
  */
-import React, { useCallback, useEffect, useState } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -18,141 +12,83 @@ import {
   Text,
   View,
 } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import { loadPrincipleParamsMap } from '../config/principlePrefsStorage';
+import {
+  defaultParamsForRank,
+  formatPrincipleTemplateText,
+} from '../config/principleUiSpecs';
 import { useUserSession } from '../context/UserSessionContext';
 import { StockmateApiV1 } from '../services/stockmateApiV1';
-import { STOCK_PRINCIPLE_DATA } from './StockPrincipleDetailScreen';
 import type {
   BehaviorLogDto,
-  ComplianceMonthDto,
+  PrincipleDefaultDto,
+  PrincipleStatMonthDto,
   PrinciplesStatusDto,
 } from '../types/stockmateApiV1';
 
-// ─── 더미 종목 집계 (항상 표시) ───────────────────────────────────────────────
-const DUMMY_STOCK_ROWS = Object.values(STOCK_PRINCIPLE_DATA).map((d) => ({
-  stockName: d.stockName,
-  stockCode: d.stockCode,
-  sectorKey: d.sectorKey,
-  ok:        d.checks.filter((c) => c.result === 'pass').length,
-  violation: d.checks.filter((c) => c.result === 'fail').length,
-}));
-
-// ─── 색상 ────────────────────────────────────────────────────────────────────
+const P = '#7D3BDD';
 const C = {
-  bg:       '#F5F7FB',
-  card:     '#FFFFFF',
-  blue:     '#3F51F6',   // 키움 블루
-  green:    '#00BFA5',
-  red:      '#F44336',
-  orange:   '#FF9800',
-  textMain: '#1A1D2D',
-  textSub:  '#7B7F96',
-  border:   '#ECEDF5',
+  bg: '#F4F5FA',
+  card: '#FFFFFF',
+  green: '#059669',
+  red: '#DC2626',
+  text: '#111827',
+  sub: '#6B7280',
+  line: '#E8E9F0',
 };
 
-// ─── 행동 유형 분류 ───────────────────────────────────────────────────────────
-const VIOLATION_TYPES = new Set([
-  'against_principle', 'no_principle', 'rule_break', 'panic_sell', 'greed_buy',
-]);
-const OK_TYPES = new Set(['normal_buy', 'normal_sell', 'hold', 'more_thinking', 'check_numbers']);
-
-function classifyLog(log: BehaviorLogDto): 'violation' | 'ok' | 'neutral' {
-  if (log.is_rule_violation)         return 'violation';
-  if (VIOLATION_TYPES.has(log.behavior_type)) return 'violation';
-  if (OK_TYPES.has(log.behavior_type))        return 'ok';
-  return 'neutral';
+function sameCalendarMonth(iso: string | undefined | null, ref: Date): boolean {
+  if (!iso) return false;
+  const d = new Date(iso);
+  return d.getFullYear() === ref.getFullYear() && d.getMonth() === ref.getMonth();
 }
 
-const BEHAVIOR_LABEL: Record<string, string> = {
-  against_principle: '원칙 위반',
-  no_principle:      '원칙 무시',
-  rule_break:        '규칙 파기',
-  panic_sell:        '공황 매도',
-  greed_buy:         '탐욕 매수',
-  normal_buy:        '원칙 매수',
-  normal_sell:       '원칙 매도',
-  hold:              '홀드 유지',
-  more_thinking:     '신중 검토',
-  check_numbers:     '숫자 확인',
-  quick_enter:       '빠른 진입',
-  issues_only:       '이슈 확인',
-  view_sector:       '섹터 열람',
-  skip:              '패스',
-};
+const MONTHLY_EDIT_CAP = 3;
 
-// ─── 종목별 집계 ──────────────────────────────────────────────────────────────
-type StockSummary = {
-  stockName: string;
-  stockCode: string | null;
-  ok:        number;
-  violation: number;
-  logs:      BehaviorLogDto[];
-};
-
-function buildStockSummaries(logs: BehaviorLogDto[]): StockSummary[] {
-  const map = new Map<string, StockSummary>();
-  for (const log of logs) {
-    const key = log.stock_name ?? log.stock_code ?? '알 수 없음';
-    if (!map.has(key)) {
-      map.set(key, { stockName: key, stockCode: log.stock_code, ok: 0, violation: 0, logs: [] });
-    }
-    const s = map.get(key)!;
-    const cls = classifyLog(log);
-    if (cls === 'violation') s.violation++;
-    else if (cls === 'ok')   s.ok++;
-    s.logs.push(log);
-  }
-  // 위반 많은 순 정렬
-  return Array.from(map.values()).sort((a, b) => b.violation - a.violation);
-}
-
-// ─── 날짜 헬퍼 ───────────────────────────────────────────────────────────────
-function thisMonthRange(): { start: string; end: string } {
-  const now   = new Date();
-  const start = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
-  const end   = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().slice(0, 10);
-  return { start, end };
-}
-
-// ─── Props ────────────────────────────────────────────────────────────────────
 interface Props {
-  navigation: { goBack: () => void; navigate: (screen: string, params?: object) => void };
-  route?: { params?: { sectorKey?: string; stockCode?: string; stockName?: string } };
+  navigation: {
+    goBack: () => void;
+    navigate: (screen: string, params?: object) => void;
+  };
 }
 
-// ════════════════════════════════════════════════════════════════════════════
 export function OwlReportScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
   const { userId, ready } = useUserSession();
+  const now = useMemo(() => new Date(), []);
 
-  const [loading,     setLoading]     = useState(true);
-  const [refreshing,  setRefreshing]  = useState(false);
-  const [principles,  setPrinciples]  = useState<PrinciplesStatusDto | null>(null);
-  const [logs,        setLogs]        = useState<BehaviorLogDto[]>([]);
-  const [compliance,  setCompliance]  = useState<ComplianceMonthDto | null>(null);
-  const [error,       setError]       = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [principles, setPrinciples] = useState<PrinciplesStatusDto | null>(null);
+  const [logs, setLogs] = useState<BehaviorLogDto[]>([]);
+  const [principleStats, setPrincipleStats] = useState<PrincipleStatMonthDto[]>([]);
+  const [principlesExpanded, setPrinciplesExpanded] = useState(false);
+  const [defaults, setDefaults] = useState<PrincipleDefaultDto[]>([]);
+  const [paramsByPid, setParamsByPid] = useState<Record<string, Record<string, number>>>({});
 
   const load = useCallback(async () => {
     if (!userId) return;
     setError(null);
-    try {
-      const [p, l, c] = await Promise.all([
-        StockmateApiV1.principles.getStatus(userId),
-        StockmateApiV1.behaviorLogs.listByUser(userId, 50),
-        StockmateApiV1.reports.getCompliance(userId, thisMonthRange()).catch(() => [] as ComplianceMonthDto[]),
-      ]);
-      setPrinciples(p);
-      setLogs(l);
-      const now = new Date();
-      const thisMonth = (c as ComplianceMonthDto[]).find(
-        (m) => m.year === now.getFullYear() && m.month === now.getMonth() + 1
-      ) ?? null;
-      setCompliance(thisMonth);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  }, [userId]);
+    const y = now.getFullYear();
+    const m = now.getMonth() + 1;
+    const [p, defs, l, ps] = await Promise.all([
+      StockmateApiV1.principles.getStatus(userId),
+      StockmateApiV1.principles.getDefaults(),
+      StockmateApiV1.behaviorLogs.listByUser(userId, 180),
+      StockmateApiV1.reports.getPrincipleStats(userId, { year: y, month: m }).catch(() => []),
+    ]);
+    const sortedDefs = defs.slice().sort((a, b) => a.default_rank - b.default_rank);
+    const pmap = await loadPrincipleParamsMap(userId, sortedDefs, p.params);
+    setDefaults(sortedDefs);
+    setParamsByPid(pmap);
+    setPrinciples(p);
+    setLogs(l);
+    setPrincipleStats(ps);
+  }, [userId, now]);
 
   useEffect(() => {
     if (!ready || !userId) return;
@@ -160,40 +96,95 @@ export function OwlReportScreen({ navigation }: Props) {
     load().finally(() => setLoading(false));
   }, [ready, userId, load]);
 
+  useFocusEffect(
+    useCallback(() => {
+      if (!ready || !userId || defaults.length === 0) return;
+      void (async () => {
+        const st = await StockmateApiV1.principles.getStatus(userId);
+        const pmap = await loadPrincipleParamsMap(userId, defaults, st.params);
+        setParamsByPid(pmap);
+      })();
+    }, [ready, userId, defaults]),
+  );
+
   const onRefresh = async () => {
     setRefreshing(true);
     await load();
     setRefreshing(false);
   };
 
-  // ── 집계 ──────────────────────────────────────────────────────────────────
-  const totalLogs    = logs.filter((l) => classifyLog(l) !== 'neutral').length;
-  const totalOk      = logs.filter((l) => classifyLog(l) === 'ok').length;
-  const totalVio     = logs.filter((l) => classifyLog(l) === 'violation').length;
-  const complianceRate =
-    compliance != null
-      ? Math.round(compliance.compliance_rate)
-      : totalLogs > 0
-      ? Math.round((totalOk / totalLogs) * 100)
-      : null;
+  const violationMonthCount = useMemo(() => {
+    const y = now.getFullYear();
+    const mo = now.getMonth() + 1;
+    return logs.filter((l) => {
+      const d = new Date(l.logged_at);
+      return d.getFullYear() === y && d.getMonth() + 1 === mo && l.is_rule_violation;
+    }).length;
+  }, [logs, now]);
 
-  const stockSummaries = buildStockSummaries(logs);
-  const violations = logs.filter((l) => classifyLog(l) === 'violation').slice(0, 10);
+  const simulatedFillsThisMonth = useMemo(() => {
+    const y = now.getFullYear();
+    const mo = now.getMonth() + 1;
+    return logs.filter((l) => {
+      const d = new Date(l.logged_at);
+      if (d.getFullYear() !== y || d.getMonth() + 1 !== mo) return false;
+      const cx = l.context_data;
+      return Boolean(cx && typeof cx === 'object' && (cx as { simulated_fill?: unknown }).simulated_fill);
+    }).length;
+  }, [logs, now]);
 
-  // ── 준수율 색상 ─────────────────────────────────────────────────────────
-  function rateColor(r: number) {
-    if (r >= 80) return C.green;
-    if (r >= 60) return C.orange;
-    return C.red;
-  }
+  const principleFlagTouches = useMemo(
+    () => principleStats.reduce((acc, s) => acc + s.violation_count, 0),
+    [principleStats],
+  );
+
+  const editRemaining = useMemo(() => {
+    let used = 0;
+    if (principles?.updated_at && sameCalendarMonth(principles.updated_at, now)) used += 1;
+    return Math.max(0, MONTHLY_EDIT_CAP - used);
+  }, [principles?.updated_at, now]);
+
+  const defaultById = useMemo(
+    () => Object.fromEntries(defaults.map((d) => [d.id, d])),
+    [defaults],
+  );
+
+  const statByPid = useMemo(() => {
+    const m = new Map<string, PrincipleStatMonthDto>();
+    for (const s of principleStats) m.set(s.principle_id, s);
+    return m;
+  }, [principleStats]);
+
+  const displayPrincipleText = useCallback(
+    (principleId: string, fallbackText: string) => {
+      const def = defaultById[principleId];
+      if (!def) return fallbackText;
+      const bag = paramsByPid[principleId] ?? defaultParamsForRank(def.default_rank);
+      return formatPrincipleTemplateText(def.text, def.default_rank, bag);
+    },
+    [defaultById, paramsByPid],
+  );
+
+  const rankingsShow = principlesExpanded
+    ? principles?.rankings ?? []
+    : (principles?.rankings ?? []).slice(0, 5);
+
+  const recentSimulatedFills = useMemo(() => {
+    return logs
+      .filter((l) => {
+        const cx = l.context_data;
+        return Boolean(cx && typeof cx === 'object' && (cx as { simulated_fill?: unknown }).simulated_fill);
+      })
+      .slice(0, 12);
+  }, [logs]);
 
   if (loading) {
     return (
       <View style={[styles.root, { paddingTop: insets.top }]}>
-        <DashHeader onBack={() => navigation.goBack()} />
+        <SimpleHeader onBack={() => navigation.goBack()} title="투자 원칙 리포트" />
         <View style={styles.centerBox}>
-          <ActivityIndicator size="large" color={C.blue} />
-          <Text style={styles.loadingTxt}>데이터 불러오는 중…</Text>
+          <ActivityIndicator size="large" color={P} />
+          <Text style={styles.loadingTxt}>불러오는 중…</Text>
         </View>
       </View>
     );
@@ -201,413 +192,360 @@ export function OwlReportScreen({ navigation }: Props) {
 
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
-      <DashHeader onBack={() => navigation.goBack()} />
-
       <ScrollView
-        contentContainerStyle={styles.scroll}
         showsVerticalScrollIndicator={false}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={C.blue} />}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={P} />}
+        contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}
       >
-        {error && (
-          <View style={styles.errBanner}>
-            <Ionicons name="alert-circle-outline" size={16} color={C.red} />
-            <Text style={styles.errTxt}>{error}</Text>
-          </View>
-        )}
+        <LinearGradient colors={[P, '#9B6DEB']} style={styles.hero}>
+          <Pressable onPress={() => navigation.goBack()} hitSlop={14} style={styles.heroBack}>
+            <Ionicons name="chevron-back" size={26} color="#fff" />
+          </Pressable>
+          <Text style={styles.heroBrand}>투자 원칙 리포트</Text>
+          <Text style={styles.heroHi}>살게요·팔게요 모의 체결과 원칙 점검 기록이에요</Text>
+          <Text style={styles.heroMonth}>
+            {now.getFullYear()}년 {now.getMonth() + 1}월
+          </Text>
+        </LinearGradient>
 
-        {/* ── 1. 요약 지표 3칸 ─────────────────────────────────────────── */}
-        <View style={styles.metricsRow}>
-          <MetricCard
-            label="이달 준수율"
-            value={complianceRate != null ? `${complianceRate}%` : '—'}
-            color={complianceRate != null ? rateColor(complianceRate) : C.textSub}
-            icon="shield-checkmark"
-          />
-          <MetricCard
-            label="원칙 준수"
-            value={String(totalOk)}
-            color={C.green}
-            icon="checkmark-circle"
-          />
-          <MetricCard
-            label="원칙 위반"
-            value={String(totalVio)}
-            color={totalVio > 0 ? C.red : C.textSub}
-            icon="close-circle"
-          />
+        <View style={styles.summaryCard}>
+          <View style={styles.summaryCol}>
+            <Text style={styles.sumLbl}>모의 체결</Text>
+            <Text style={[styles.sumVal, { color: P }]}>{simulatedFillsThisMonth}건</Text>
+            <Text style={styles.sumHint}>이번 달 (실주문 없음)</Text>
+          </View>
+          <View style={styles.sumDivider} />
+          <Pressable
+            style={styles.summaryCol}
+            onPress={() =>
+              navigation.navigate('OwlReportViolations', {
+                year: now.getFullYear(),
+                month: now.getMonth() + 1,
+              })
+            }
+          >
+            <Text style={styles.sumLbl}>점검 집계</Text>
+            <Text style={[styles.sumVal, { color: violationMonthCount > 0 ? C.red : C.sub }]}>
+              {violationMonthCount}건
+            </Text>
+            <Text style={styles.tapHint}>위반으로 집계된 건 ›</Text>
+          </Pressable>
+          <View style={styles.sumDivider} />
+          <View style={styles.summaryCol}>
+            <Text style={styles.sumLbl}>수정 잔여</Text>
+            <Text style={[styles.sumVal, { color: P }]}>{editRemaining}회</Text>
+            <View style={styles.dotRow}>
+              {Array.from({ length: MONTHLY_EDIT_CAP }).map((_, i) => (
+                <View
+                  key={i}
+                  style={[styles.dot, i < editRemaining ? styles.dotOn : styles.dotOff]}
+                />
+              ))}
+            </View>
+          </View>
         </View>
 
-        {/* ── 2. 내 투자 원칙 ──────────────────────────────────────────── */}
-        <SectionTitle
-          icon="list"
-          title="내 투자 원칙"
-          right={
-            <Pressable
-              onPress={() => navigation.navigate('Principles')}
-              style={({ pressed }) => [styles.principlesEditBtn, pressed && styles.principlesEditBtnPressed]}
-              hitSlop={8}
-            >
-              <Text style={styles.principlesEditBtnTxt}>투자 원칙 수정</Text>
-            </Pressable>
-          }
-        />
+        {error ? (
+          <View style={styles.errBanner}>
+            <Text style={styles.errTxt}>{error}</Text>
+          </View>
+        ) : null}
+
+        <Text style={styles.blockTitle}>모의 체결 기록</Text>
+        <Text style={styles.blockSub}>
+          종목 화면에서 살게요·팔게요를 끝까지 진행하면 서버에 저장돼요. 원칙 점검에 걸린 횟수 합계:{' '}
+          {principleFlagTouches}회
+        </Text>
+        <View style={styles.card}>
+          {recentSimulatedFills.length === 0 ? (
+            <Text style={[styles.muted, { padding: 14 }]}>
+              아직 모의 체결 기록이 없어요. 종목 상세에서 매수·매도를 진행해 보세요.
+            </Text>
+          ) : (
+            recentSimulatedFills.map((log, idx) => {
+              const cx = (log.context_data ?? {}) as {
+                side?: string;
+                quantity?: number;
+                limit_price_won?: number;
+                order_check?: { flagged?: { short_label: string }[] };
+              };
+              const flagged = cx.order_check?.flagged ?? [];
+              return (
+                <View key={log.id} style={[styles.simRow, idx > 0 && styles.pRowBorder]}>
+                  <Text style={styles.simDate}>{log.logged_at.slice(0, 16).replace('T', ' ')}</Text>
+                  <Text style={styles.simTitle} numberOfLines={1}>
+                    {log.stock_name ?? '종목'} · {cx.side === 'sell' ? '모의 매도' : '모의 매수'}{' '}
+                    {cx.quantity != null ? `${cx.quantity}주` : ''}{' '}
+                    {cx.limit_price_won != null ? `@ ${cx.limit_price_won.toLocaleString('ko-KR')}원` : ''}
+                  </Text>
+                  <Text style={styles.simSub}>
+                    점검 대상 원칙 {flagged.length}개
+                    {flagged.length > 0
+                      ? ` — ${flagged.map((f) => f.short_label).slice(0, 3).join(', ')}${flagged.length > 3 ? '…' : ''}`
+                      : ' (이번 체결은 순위권 점검 리스트에 없음)'}
+                  </Text>
+                </View>
+              );
+            })
+          )}
+        </View>
+
+        {/* 내 투자 원칙 */}
+        <View style={styles.rowHead}>
+          <Text style={styles.blockTitleFlat}>내 투자 원칙 보기</Text>
+          <Pressable
+            style={styles.editPill}
+            onPress={() => navigation.navigate('Principles')}
+            hitSlop={8}
+          >
+            <Text style={styles.editPillTxt}>수정</Text>
+          </Pressable>
+        </View>
+        <Text style={styles.principleSourceNote}>
+          순위·선택·슬라이더 값은 저장 시 Supabase(DB)에 반영되고, 이 기기에 남은 값이 있으면 서버 값이 우선이에요.
+        </Text>
         {!principles?.is_configured ? (
-          <View style={styles.emptyCard}>
-            <Text style={styles.emptyTxt}>원칙이 아직 설정되지 않았어요.</Text>
+          <View style={styles.cardMuted}>
+            <Text style={styles.muted}>아직 설정된 원칙이 없어요.</Text>
+            <Pressable style={styles.linkBtn} onPress={() => navigation.navigate('Principles')}>
+              <Text style={styles.linkBtnTxt}>투자 판단 설정하기</Text>
+            </Pressable>
           </View>
         ) : (
           <View style={styles.card}>
-            {principles.rankings.slice(0, 5).map((r, idx) => (
+            {rankingsShow.map((r, idx) => (
               <View
                 key={r.principle_id}
-                style={[styles.principleRow, idx > 0 && styles.principleRowBorder]}
+                style={[styles.pRow, idx > 0 && styles.pRowBorder]}
               >
-                <View style={[styles.rankBadge, { backgroundColor: idx < 3 ? C.blue : C.border }]}>
-                  <Text style={[styles.rankNum, { color: idx < 3 ? '#fff' : C.textSub }]}>
-                    {r.rank}
-                  </Text>
+                <View style={styles.pBadge}>
+                  <Text style={styles.pBadgeTxt}>{r.rank}</Text>
                 </View>
-                <View style={styles.principleMeta}>
-                  <Text style={styles.principleShort}>{r.short_label}</Text>
-                  <Text style={styles.principleText} numberOfLines={2}>{r.text}</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.pShort}>{r.short_label}</Text>
+                  <Text style={styles.pText} numberOfLines={5}>
+                    {displayPrincipleText(r.principle_id, r.text)}
+                  </Text>
                 </View>
               </View>
             ))}
-            {principles.rankings.length > 5 && (
-              <Text style={styles.moreHint}>외 {principles.rankings.length - 5}개 더</Text>
-            )}
+            {(principles?.rankings.length ?? 0) > 5 ? (
+              <Pressable
+                style={styles.moreRow}
+                onPress={() => setPrinciplesExpanded((v) => !v)}
+              >
+                <Text style={styles.moreTxt}>
+                  {principlesExpanded ? '접기' : `더보기 (+${(principles?.rankings.length ?? 0) - 5}개)`}
+                </Text>
+              </Pressable>
+            ) : null}
           </View>
         )}
 
-        {/* ── 3. 종목별 원칙 진단 ─────────────────────────────────────── */}
-        <SectionTitle icon="bar-chart" title="종목별 원칙 진단" />
-        <View style={styles.card}>
-          {DUMMY_STOCK_ROWS.map((s, idx) => {
-            const total = s.ok + s.violation;
-            const rate  = total > 0 ? Math.round((s.ok / total) * 100) : null;
-            const isBad = s.violation > 0;
-            return (
-              <Pressable
-                key={s.stockCode}
-                style={({ pressed }) => [
-                  styles.stockRow,
-                  idx > 0 && styles.stockRowBorder,
-                  pressed && styles.stockRowPressed,
-                ]}
-                onPress={() =>
-                  navigation.navigate('StockPrincipleDetail', { stockCode: s.stockCode })
-                }
-              >
-                {/* 좌: 상태 점 + 종목명 */}
-                <View style={styles.stockLeft}>
-                  <View style={[styles.stockDot, { backgroundColor: isBad ? C.red : C.green }]} />
-                  <View>
-                    <Text style={styles.stockName}>{s.stockName}</Text>
-                    <Text style={styles.stockCode}>{s.stockCode} · {s.sectorKey}</Text>
+        <Text style={styles.blockTitle}>원칙별 이번 달 집계</Text>
+        <Text style={styles.blockSub}>
+          모의 체결 때 서버가 다시 계산해 저장한 점검 목록을 기준으로 해요. 「짚힘」은 점검 대상에 올라온 횟수,
+          「통과」는 그때 순위에 있었으나 점검 리스트에 없었던 횟수예요.
+        </Text>
+        {!principles?.is_configured ? null : (
+          <View style={styles.card}>
+            {principleStats.length === 0 ? (
+              <Text style={[styles.muted, { padding: 14 }]}>
+                이번 달 모의 체결 기록이 쌓이면 여기에 원칙별로 숫자가 나타나요.
+              </Text>
+            ) : null}
+            {(principles?.rankings ?? []).map((r, idx) => {
+              const st = statByPid.get(r.principle_id);
+              const v = st?.violation_count ?? 0;
+              const ok = st?.practice_ok_count ?? 0;
+              return (
+                <View key={r.principle_id} style={[idx > 0 && styles.pRowBorder, { padding: 14 }]}>
+                  <View style={styles.barTitleRow}>
+                    <Text style={styles.pShort} numberOfLines={1}>
+                      {r.short_label}
+                    </Text>
+                    <Text style={styles.pPct}>
+                      짚힘 {v} · 통과 {ok}
+                    </Text>
                   </View>
+                  <Text style={styles.barSubPrinciple} numberOfLines={2}>
+                    {displayPrincipleText(r.principle_id, r.text)}
+                  </Text>
                 </View>
-
-                {/* 우: 준수/위반 칩 + 준수율 + 화살표 */}
-                <View style={styles.stockRight}>
-                  {s.ok > 0 && (
-                    <View style={styles.okChip}>
-                      <Text style={styles.okChipTxt}>✓ {s.ok}</Text>
-                    </View>
-                  )}
-                  {s.violation > 0 && (
-                    <View style={styles.vioChip}>
-                      <Text style={styles.vioChipTxt}>✕ {s.violation}</Text>
-                    </View>
-                  )}
-                  {rate != null && (
-                    <Text style={[styles.rateText, { color: rateColor(rate) }]}>{rate}%</Text>
-                  )}
-                  <Ionicons name="chevron-forward" size={16} color={C.textSub} />
-                </View>
-              </Pressable>
-            );
-          })}
-        </View>
-
-        {/* ── 4. 최근 위반 목록 ─────────────────────────────────────────── */}
-        {violations.length > 0 && (
-          <>
-            <SectionTitle icon="warning" title="최근 위반 내역" color={C.red} />
-            <View style={[styles.card, styles.vioCard]}>
-              {violations.map((log, idx) => (
-                <View
-                  key={log.id}
-                  style={[styles.vioRow, idx > 0 && styles.vioRowBorder]}
-                >
-                  <View style={styles.vioBullet} />
-                  <View style={styles.vioInfo}>
-                    <View style={styles.vioTop}>
-                      <Text style={styles.vioStock}>
-                        {log.stock_name ?? log.stock_code ?? '종목 미상'}
-                      </Text>
-                      <View style={styles.vioTypeBadge}>
-                        <Text style={styles.vioTypeTxt}>
-                          {BEHAVIOR_LABEL[log.behavior_type] ?? log.behavior_type}
-                        </Text>
-                      </View>
-                    </View>
-                    <Text style={styles.vioDate}>{log.logged_at.slice(0, 10)}</Text>
-                    {log.user_memo && (
-                      <Text style={styles.vioMemo} numberOfLines={2}>{log.user_memo}</Text>
-                    )}
-                  </View>
-                </View>
-              ))}
-            </View>
-          </>
+              );
+            })}
+          </View>
         )}
-
-        {/* ── 5. 원칙 준수 종목 (좋은 소식) ──────────────────────────── */}
-        {stockSummaries.some((s) => s.ok > 0 && s.violation === 0) && (
-          <>
-            <SectionTitle icon="star" title="원칙 잘 지킨 종목" color={C.green} />
-            <View style={styles.card}>
-              {stockSummaries
-                .filter((s) => s.ok > 0 && s.violation === 0)
-                .map((s, idx) => (
-                  <View
-                    key={s.stockName}
-                    style={[styles.goodRow, idx > 0 && styles.goodRowBorder]}
-                  >
-                    <Ionicons name="checkmark-circle" size={18} color={C.green} />
-                    <Text style={styles.goodName}>{s.stockName}</Text>
-                    <Text style={styles.goodCount}>{s.ok}회 준수</Text>
-                  </View>
-                ))}
-            </View>
-          </>
-        )}
-
-        <View style={{ height: Math.max(insets.bottom + 16, 32) }} />
       </ScrollView>
     </View>
   );
 }
 
-// ─── 서브 컴포넌트 ────────────────────────────────────────────────────────────
-
-function DashHeader({ onBack }: { onBack: () => void }) {
+function SimpleHeader({ onBack, title }: { onBack: () => void; title: string }) {
   return (
-    <View style={styles.header}>
-      <Pressable onPress={onBack} hitSlop={12} style={styles.backHit}>
-        <Ionicons name="chevron-back" size={28} color={C.textMain} />
+    <View style={styles.simpleHeader}>
+      <Pressable onPress={onBack} hitSlop={12} style={styles.heroBack}>
+        <Ionicons name="chevron-back" size={26} color={C.text} />
       </Pressable>
-      <View style={styles.headerCenter}>
-        <Text style={styles.headerTitle}>투자 원칙 리포트</Text>
-        <Text style={styles.headerSub}>내 원칙 기반 거래 진단</Text>
-      </View>
-      <View style={styles.backHit} />
+      <Text style={styles.simpleTitle}>{title}</Text>
+      <View style={{ width: 44 }} />
     </View>
   );
 }
 
-function MetricCard({
-  label, value, color, icon,
-}: {
-  label: string;
-  value: string;
-  color: string;
-  icon: React.ComponentProps<typeof Ionicons>['name'];
-}) {
-  return (
-    <View style={styles.metricCard}>
-      <Ionicons name={icon} size={20} color={color} style={{ marginBottom: 6 }} />
-      <Text style={[styles.metricValue, { color }]}>{value}</Text>
-      <Text style={styles.metricLabel}>{label}</Text>
-    </View>
-  );
-}
-
-function SectionTitle({
-  icon,
-  title,
-  color = C.textMain,
-  right,
-}: {
-  icon: React.ComponentProps<typeof Ionicons>['name'];
-  title: string;
-  color?: string;
-  right?: React.ReactNode;
-}) {
-  return (
-    <View style={[styles.sectionTitle, right ? styles.sectionTitleWithRight : null]}>
-      <View style={styles.sectionTitleLeft}>
-        <Ionicons name={icon as any} size={16} color={color} />
-        <Text style={[styles.sectionTitleTxt, { color }]} numberOfLines={1}>
-          {title}
-        </Text>
-      </View>
-      {right}
-    </View>
-  );
-}
-
-// ─── 스타일 ───────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
-  root:       { flex: 1, backgroundColor: C.bg },
-  scroll:     { paddingHorizontal: 16, paddingTop: 8 },
-  centerBox:  { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
-  loadingTxt: { fontSize: 14, color: C.textSub, fontWeight: '600' },
-
-  // Header
-  header: {
+  root: { flex: 1, backgroundColor: C.bg },
+  centerBox: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 10 },
+  loadingTxt: { fontSize: 14, color: C.sub, fontWeight: '600' },
+  simpleHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 4,
+    paddingHorizontal: 6,
     paddingBottom: 8,
     backgroundColor: C.bg,
   },
-  backHit:      { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
-  headerCenter: { flex: 1, alignItems: 'center' },
-  headerTitle:  { fontSize: 18, fontWeight: '900', color: C.textMain },
-  headerSub:    { fontSize: 11, fontWeight: '700', color: C.textSub, marginTop: 2 },
+  simpleTitle: { flex: 1, textAlign: 'center', fontSize: 17, fontWeight: '900', color: C.text },
 
-  // Error
-  errBanner: {
-    flexDirection: 'row', alignItems: 'center', gap: 8,
-    backgroundColor: '#FFEBEE', borderRadius: 10, padding: 12, marginBottom: 12,
+  hero: {
+    marginHorizontal: 16,
+    borderRadius: 18,
+    paddingTop: 8,
+    paddingBottom: 28,
+    paddingHorizontal: 14,
+    marginBottom: -18,
   },
-  errTxt: { flex: 1, fontSize: 13, color: C.red, fontWeight: '600' },
+  heroBack: { width: 44, height: 40, justifyContent: 'center' },
+  heroBrand: { color: 'rgba(255,255,255,0.92)', fontSize: 13, fontWeight: '800', marginTop: 4 },
+  heroHi: { color: 'rgba(255,255,255,0.88)', fontSize: 12, fontWeight: '600', marginTop: 10 },
+  heroMonth: { color: '#fff', fontSize: 26, fontWeight: '900', marginTop: 6 },
 
-  // 지표 카드 행
-  metricsRow: { flexDirection: 'row', gap: 10, marginBottom: 20 },
-  metricCard: {
-    flex: 1,
+  summaryCard: {
+    marginHorizontal: 16,
+    marginTop: 8,
     backgroundColor: C.card,
     borderRadius: 16,
+    flexDirection: 'row',
     paddingVertical: 16,
-    alignItems: 'center',
     borderWidth: 1,
-    borderColor: C.border,
-    shadowColor: '#0001',
-    shadowOffset: { width: 0, height: 2 },
+    borderColor: C.line,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.08,
-    shadowRadius: 6,
-    elevation: 2,
+    shadowRadius: 10,
+    elevation: 3,
   },
-  metricValue: { fontSize: 22, fontWeight: '900', marginBottom: 4 },
-  metricLabel: { fontSize: 11, fontWeight: '700', color: C.textSub, textAlign: 'center' },
+  summaryCol: { flex: 1, alignItems: 'center' },
+  sumLbl: { fontSize: 11, color: C.sub, fontWeight: '700', marginBottom: 6 },
+  sumVal: { fontSize: 22, fontWeight: '900' },
+  sumDelta: { fontSize: 12, fontWeight: '800', marginTop: 4 },
+  sumHint: { fontSize: 11, color: C.sub, marginTop: 4, fontWeight: '600' },
+  tapHint: { fontSize: 11, color: C.sub, marginTop: 4, fontWeight: '700' },
+  sumDivider: { width: 1, backgroundColor: C.line, marginVertical: 4 },
+  dotRow: { flexDirection: 'row', gap: 5, marginTop: 8 },
+  dot: { width: 8, height: 8, borderRadius: 4 },
+  dotOn: { backgroundColor: P },
+  dotOff: { backgroundColor: '#E5E7EB' },
 
-  // Section title
-  sectionTitle: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginBottom: 8,
-    marginTop: 4,
-  },
-  sectionTitleWithRight: {
-    justifyContent: 'space-between',
-    gap: 10,
-  },
-  sectionTitleLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    flex: 1,
-    minWidth: 0,
-  },
-  sectionTitleTxt: { fontSize: 14, fontWeight: '800', flexShrink: 1 },
-  principlesEditBtn: {
-    paddingVertical: 6,
-    paddingHorizontal: 10,
+  errBanner: {
+    marginHorizontal: 16,
+    marginTop: 10,
+    backgroundColor: '#FEF2F2',
+    padding: 10,
     borderRadius: 10,
-    backgroundColor: '#E8EAFF',
-    borderWidth: 1,
-    borderColor: C.blue,
   },
-  principlesEditBtnPressed: { opacity: 0.88 },
-  principlesEditBtnTxt: { fontSize: 12, fontWeight: '800', color: C.blue },
+  errTxt: { color: C.red, fontWeight: '600', fontSize: 13 },
 
-  // 공통 카드
-  card: {
-    backgroundColor: C.card,
-    borderRadius: 16,
+  blockTitle: {
+    marginTop: 22,
+    marginHorizontal: 16,
+    fontSize: 16,
+    fontWeight: '900',
+    color: C.text,
+  },
+  blockTitleFlat: { fontSize: 16, fontWeight: '900', color: C.text },
+  blockSub: {
+    marginHorizontal: 16,
+    marginTop: 4,
+    marginBottom: 8,
+    fontSize: 12,
+    color: C.sub,
+    fontWeight: '600',
+  },
+  rowHead: {
+    marginTop: 20,
+    marginHorizontal: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  editPill: {
+    backgroundColor: '#EDE9FE',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
     borderWidth: 1,
-    borderColor: C.border,
-    marginBottom: 16,
+    borderColor: P,
+  },
+  editPillTxt: { fontSize: 13, fontWeight: '900', color: P },
+  linkInline: { fontSize: 13, fontWeight: '800', color: P },
+  principleSourceNote: {
+    marginHorizontal: 16,
+    marginTop: -4,
+    marginBottom: 8,
+    fontSize: 11,
+    color: C.sub,
+    fontWeight: '600',
+    lineHeight: 16,
+  },
+
+  card: {
+    marginHorizontal: 16,
+    backgroundColor: C.card,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: C.line,
     overflow: 'hidden',
   },
-  emptyCard: {
-    backgroundColor: C.card,
-    borderRadius: 16,
+  cardMuted: {
+    marginHorizontal: 16,
+    padding: 18,
+    backgroundColor: '#FAFAFA',
+    borderRadius: 14,
     borderWidth: 1,
-    borderColor: C.border,
-    marginBottom: 16,
-    padding: 20,
+    borderColor: C.line,
+  },
+  muted: { fontSize: 13, color: C.sub, fontWeight: '600', lineHeight: 20 },
+  linkBtn: { marginTop: 12, alignSelf: 'flex-start' },
+  linkBtnTxt: { fontSize: 14, fontWeight: '900', color: P },
+
+  simRow: { paddingHorizontal: 14, paddingVertical: 12 },
+  simDate: { fontSize: 11, color: C.sub, fontWeight: '700' },
+  simTitle: { fontSize: 14, fontWeight: '800', color: C.text, marginTop: 4 },
+  simSub: { fontSize: 12, color: '#4B5563', marginTop: 6, lineHeight: 17, fontWeight: '600' },
+
+  pRow: { flexDirection: 'row', gap: 12, paddingHorizontal: 14, paddingVertical: 12 },
+  pRowBorder: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.line },
+  pBadge: {
+    width: 26,
+    height: 26,
+    borderRadius: 8,
+    backgroundColor: '#EDE9FE',
     alignItems: 'center',
+    justifyContent: 'center',
   },
-  emptyTxt: { fontSize: 13, color: C.textSub, fontWeight: '600' },
+  pBadgeTxt: { fontSize: 12, fontWeight: '900', color: P },
+  pShort: { fontSize: 13, fontWeight: '900', color: C.text },
+  pText: { fontSize: 12, color: '#4B5563', fontWeight: '600', marginTop: 4, lineHeight: 18 },
+  moreRow: { paddingVertical: 12, alignItems: 'center', borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.line },
+  moreTxt: { fontSize: 13, fontWeight: '800', color: P },
 
-  // 원칙 목록
-  principleRow: {
-    flexDirection: 'row', alignItems: 'flex-start', gap: 12,
-    paddingHorizontal: 16, paddingVertical: 14,
+  barTitleRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },
+  pPct: { fontSize: 14, fontWeight: '900', color: P },
+  barSubPrinciple: {
+    fontSize: 11,
+    color: '#6B7280',
+    fontWeight: '600',
+    lineHeight: 16,
+    marginBottom: 0,
   },
-  principleRowBorder: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.border },
-  rankBadge: {
-    width: 26, height: 26, borderRadius: 13,
-    alignItems: 'center', justifyContent: 'center',
-    flexShrink: 0,
-  },
-  rankNum:      { fontSize: 12, fontWeight: '900' },
-  principleMeta:{ flex: 1 },
-  principleShort: { fontSize: 12, fontWeight: '800', color: C.blue, marginBottom: 3 },
-  principleText:  { fontSize: 13, fontWeight: '600', color: C.textMain, lineHeight: 19 },
-  moreHint: {
-    fontSize: 12, color: C.textSub, fontWeight: '700',
-    textAlign: 'center', paddingVertical: 10,
-    borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.border,
-  },
-
-  // 종목별
-  stockRow: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: 16, paddingVertical: 14,
-  },
-  stockRowBorder:   { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.border },
-  stockRowPressed:  { backgroundColor: '#F0F2FF' },
-  stockLeft:  { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 },
-  stockDot:   { width: 10, height: 10, borderRadius: 5 },
-  stockName:  { fontSize: 14, fontWeight: '800', color: C.textMain },
-  stockCode:  { fontSize: 11, color: C.textSub, fontWeight: '600', marginTop: 2 },
-  stockRight: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  okChip:  { backgroundColor: '#E8F5E9', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4 },
-  okChipTxt: { fontSize: 12, fontWeight: '800', color: C.green },
-  vioChip: { backgroundColor: '#FFEBEE', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4 },
-  vioChipTxt: { fontSize: 12, fontWeight: '800', color: C.red },
-  rateText:   { fontSize: 13, fontWeight: '900', minWidth: 38, textAlign: 'right' },
-
-  // 위반 목록
-  vioCard: { borderColor: '#FFCDD2' },
-  vioRow:  {
-    flexDirection: 'row', alignItems: 'flex-start', gap: 10,
-    paddingHorizontal: 16, paddingVertical: 14,
-  },
-  vioRowBorder: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: '#FFCDD2' },
-  vioBullet: { width: 8, height: 8, borderRadius: 4, backgroundColor: C.red, marginTop: 6 },
-  vioInfo:   { flex: 1 },
-  vioTop:    { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
-  vioStock:  { fontSize: 14, fontWeight: '800', color: C.textMain },
-  vioTypeBadge: {
-    backgroundColor: '#FFEBEE', borderRadius: 6,
-    paddingHorizontal: 7, paddingVertical: 3,
-  },
-  vioTypeTxt: { fontSize: 11, fontWeight: '800', color: C.red },
-  vioDate:    { fontSize: 11, color: C.textSub, fontWeight: '600', marginTop: 4 },
-  vioMemo:    { fontSize: 12, color: '#5D4037', fontWeight: '600', marginTop: 4, lineHeight: 18 },
-
-  // 원칙 준수 종목
-  goodRow: {
-    flexDirection: 'row', alignItems: 'center', gap: 10,
-    paddingHorizontal: 16, paddingVertical: 14,
-  },
-  goodRowBorder: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.border },
-  goodName:  { flex: 1, fontSize: 14, fontWeight: '800', color: C.textMain },
-  goodCount: { fontSize: 12, fontWeight: '800', color: C.green },
 });

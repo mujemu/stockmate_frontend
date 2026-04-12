@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { DimensionValue } from 'react-native';
+import type { DimensionValue, NativeScrollEvent, NativeSyntheticEvent } from 'react-native';
 import {
   ActivityIndicator,
   FlatList,
@@ -132,22 +132,48 @@ const ORDER_PRINCIPLE_RECAP_ID = 'order-principle-recap';
 
 type OrderRecapLine = { label: string; reasonOneLine: string };
 
-/** 점검방: 위반 원칙 요약(recap) 바로 위에, 그 다음 order_cli — 맨 끝에만 붙이도록 정규화 */
+/**
+ * 점검방: 일반 채팅처럼 시간 순서를 유지한다.
+ * - `order_principle_recap` 은 맨 위(토픽 안내 직후) 한 번만 두고, 내용만 갱신한다.
+ * - `order_cli` 만 항상 맨 아래로 옮겨, 그 위에 사용자·에이전트 말풍선이 쌓이게 한다.
+ */
 function normalizeOrderPrincipleTail(
   prev: ThreadRow[],
   recapItems: OrderRecapLine[],
   prompt: string,
   choices: string[],
 ): ThreadRow[] {
-  const base = prev.filter((r) => r.kind !== 'order_cli' && r.kind !== 'order_principle_recap');
+  const base = prev.filter((r) => r.kind !== 'order_cli');
   const out: ThreadRow[] = [...base];
+  const recapIdx = out.findIndex(
+    (r) => r.kind === 'order_principle_recap' && r.id === ORDER_PRINCIPLE_RECAP_ID,
+  );
+
   if (recapItems.length > 0) {
-    out.push({
+    const recapRow: ThreadRow = {
       kind: 'order_principle_recap',
       id: ORDER_PRINCIPLE_RECAP_ID,
       items: recapItems,
-    });
+    };
+    if (recapIdx >= 0) {
+      out[recapIdx] = recapRow;
+    } else {
+      // 토픽 안내가 있으면 그 직후, 없으면 기존 대화(게시글) 맨 뒤·CLI 직전에 한 번만 삽입
+      const firstTopicIdx = out.findIndex((r) => r.kind === 'topic');
+      if (firstTopicIdx >= 0) {
+        let afterTopic = firstTopicIdx + 1;
+        while (afterTopic < out.length && out[afterTopic].kind === 'topic') {
+          afterTopic += 1;
+        }
+        out.splice(afterTopic, 0, recapRow);
+      } else {
+        out.push(recapRow);
+      }
+    }
+  } else if (recapIdx >= 0) {
+    out.splice(recapIdx, 1);
   }
+
   if (choices.length > 0) {
     out.push({ kind: 'order_cli', id: ORDER_CLI_ROW_ID, prompt, choices });
   }
@@ -177,9 +203,9 @@ export type DebateOrderContext = {
   violationDetails?: OrderPrincipleViolationDetailIntro[];
 };
 
-const ORDER_CLI_FALLBACKS = ['분할·비중 점검', '손절·익절 기준 점검', '추격 매수·속도 점검'];
+const ORDER_CLI_FALLBACKS = ['나눠 살 비중 점검', '손절·익절 가격 점검', '너무 빨리 따라 사는지 점검'];
 
-/** 맞물릴 수 있는 원칙 카드와 동일한 순서의 짧은 라벨 */
+/** 위반 원칙 카드와 동일한 순서의 짧은 라벨 */
 function orderedRecapLabelsForOrderPrincipleCli(oc: DebateOrderContext | undefined): string[] {
   return buildOrderPrincipleRecapItemsForDebate(oc)
     .map((i) => i.label.trim())
@@ -266,10 +292,10 @@ function suggestCliFromContext(
     add('분할 횟수·비중만 다시 잡기');
   }
   if (/추격|급등|속도|즉시|FOMO|fomo/i.test(owl) || /추격|급등/.test(user)) {
-    add('쿨다운 후 재검토하기');
+    add('잠깐 쉬었다가 다시 생각하기');
   }
   if (/감정|멘탈|공포|욕심|마음/.test(owl)) {
-    add('감정 체크 질문 3개 적기');
+    add('지금 기분·생각 세 가지만 적어 보기');
   }
   if (/기록|메모|일지/.test(owl) || /메모|기록/.test(user)) {
     add('이번 결정 한 줄 메모 남기기');
@@ -282,8 +308,8 @@ function suggestCliFromContext(
   add('키문이에게 한 가지만 더 물어보기');
   const choices = pick.slice(0, 3);
   const prompt = owl.trim()
-    ? '키문이 답변을 바탕으로 이어질 행동 후보예요. 하나만 골라 보내세요.'
-    : '지금 손볼 원칙을 골라 주세요.';
+    ? '키문이가 말한 내용을 보고, 아래에서 하실 일 하나만 골라 보내 주세요.'
+    : '지금부터 손볼 원칙을 아래에서 골라 주세요.';
   return { prompt, choices };
 }
 
@@ -360,6 +386,36 @@ export function DebateRoomScreen({ navigation, route }: Props) {
   const [topicOwlOnly, setTopicOwlOnly] = useState(false);
   const owlOnlyMode = isOrderPrincipleNav || topicOwlOnly;
 
+  /** 상단바: 주문 점검 `종목명\n주문 전 원칙 점검`, 섹터 `섹터명\n공론장` */
+  const debateScreenTitle = useMemo(() => {
+    if (isOrderPrincipleNav) {
+      const name = (paramStockName ?? '').trim();
+      return name ? `${name}\n주문 전 원칙 점검` : '주문 전 원칙 점검';
+    }
+    if (isSectorOnlyNav) {
+      const sk = (paramSectorKey ?? '').trim();
+      return sk ? `${sk}\n공론장` : topicTitle;
+    }
+    return topicTitle;
+  }, [isOrderPrincipleNav, isSectorOnlyNav, paramStockName, paramSectorKey, topicTitle]);
+
+  const debateHeaderCompact = isOrderPrincipleNav || isSectorOnlyNav;
+
+  /** 종목명·섹터명은 진하게, 부제(주문 전 원칙 점검 / 공론장)는 연하게 */
+  const debateCompactTitleParts = useMemo(() => {
+    if (isOrderPrincipleNav) {
+      const name = (paramStockName ?? '').trim();
+      if (name) return { primary: name, secondary: '주문 전 원칙 점검' as const };
+      return null;
+    }
+    if (isSectorOnlyNav) {
+      const sk = (paramSectorKey ?? '').trim();
+      if (sk) return { primary: sk, secondary: '공론장' as const };
+      return null;
+    }
+    return null;
+  }, [isOrderPrincipleNav, isSectorOnlyNav, paramStockName, paramSectorKey]);
+
   const orderPrincipleRecapFull = useMemo(
     () => buildOrderPrincipleRecapItemsForDebate(orderContext),
     [
@@ -377,6 +433,8 @@ export function DebateRoomScreen({ navigation, route }: Props) {
   const rankingLabelsRef = useRef<string[]>([]);
 
   const listRef  = useRef<FlatList>(null);
+  /** 사용자가 위로 읽고 있으면 false — 자동 scrollToEnd 가 스크롤을 빼앗지 않음 */
+  const listNearBottomRef = useRef(true);
   const chatHRef = useRef(defaultChatH);
   const dragStartH = useRef(defaultChatH);
   const limitsRef = useRef({ min: minChatH, max: maxChatH });
@@ -389,6 +447,42 @@ export function DebateRoomScreen({ navigation, route }: Props) {
     limitsRef.current = { min: minChatH, max: maxChatH };
     setChatHeight((h) => Math.min(maxChatH, Math.max(minChatH, h)));
   }, [minChatH, maxChatH]);
+
+  const onScrollChatList = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
+    const vh = layoutMeasurement.height;
+    if (vh <= 0) return;
+    if (contentSize.height <= vh + 12) {
+      listNearBottomRef.current = true;
+      return;
+    }
+    const distFromBottom = contentSize.height - vh - contentOffset.y;
+    listNearBottomRef.current = distFromBottom < 120;
+  }, []);
+
+  // ── 새 메시지·리스트 높이 변화 시 맨 아래로 (점검방도 일반 채팅처럼) ─────────────────
+  const scrollChatToEnd = useCallback((animated: boolean, force = false) => {
+    if (!force && !listNearBottomRef.current) return;
+    requestAnimationFrame(() => {
+      listRef.current?.scrollToEnd({ animated });
+    });
+  }, []);
+
+  /** 타이핑처럼 같은 행 id 안에서만 텍스트가 길어질 때도 맨 아래를 따라가게 */
+  const scrollChatToEndAfterFlush = useCallback(() => {
+    if (!listNearBottomRef.current) return;
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (!listNearBottomRef.current) return;
+        listRef.current?.scrollToEnd({ animated: false });
+      });
+    });
+  }, []);
+
+  useEffect(() => {
+    // 전송·에이전트 응답(타이핑 포함) 중에는 애니메이션 스크롤이 겹쳐 끝에 못 닿는 경우가 있어 즉시 이동
+    scrollChatToEnd(!(sending || agentReplying), false);
+  }, [rows, sending, agentReplying, cliChoices, cliPrompt, orderPrincipleRecapFull, scrollChatToEnd]);
 
   const chatPanResponder = useMemo(
     () =>
@@ -405,10 +499,10 @@ export function DebateRoomScreen({ navigation, route }: Props) {
           setChatHeight(next);
         },
         onPanResponderRelease: () => {
-          listRef.current?.scrollToEnd({ animated: true });
+          scrollChatToEnd(true, false);
         },
       }),
-    [],
+    [scrollChatToEnd],
   );
 
   // ── 키보드 — 채팅 패널 높이와 합산하기 위해 숫자 inset 사용 ─────────────────────
@@ -420,7 +514,8 @@ export function DebateRoomScreen({ navigation, route }: Props) {
       const h = e.endCoordinates.height;
       setKeyboardExtraPad(Math.round(h * 0.15));
       setKbInset(h);
-      requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: true }));
+      listNearBottomRef.current = true;
+      requestAnimationFrame(() => scrollChatToEnd(true, true));
     });
     const onHide = Keyboard.addListener(hideEv, () => {
       setKeyboardExtraPad(0);
@@ -430,12 +525,7 @@ export function DebateRoomScreen({ navigation, route }: Props) {
       onShow.remove();
       onHide.remove();
     };
-  }, []);
-
-  // ── 새 메시지 추가 시 스크롤 ──────────────────────────────────────────────────
-  useEffect(() => {
-    listRef.current?.scrollToEnd({ animated: true });
-  }, [rows, sending, cliChoices, cliPrompt, orderPrincipleRecapFull]);
+  }, [scrollChatToEnd]);
 
   // ── 에이전트 메시지 타이핑 효과 ───────────────────────────────────────────────
   const addAgentTyping = useCallback(
@@ -449,9 +539,9 @@ export function DebateRoomScreen({ navigation, route }: Props) {
         { kind: 'agent' as const, id: tempId, agentId, agentName, text: '' },
       ]);
 
-      // 타이핑 속도: 전체 시간 1.5~4초, 40ms 단위
-      const totalMs    = Math.min(Math.max(text.length * 25, 1500), 4000);
-      const tickMs     = 40;
+      // 타이핑 속도: 천천히 읽히도록 글자당 시간·최소·최대 길게
+      const totalMs    = Math.min(Math.max(text.length * 58, 3200), 14000);
+      const tickMs     = 52;
       const ticks      = Math.ceil(totalMs / tickMs);
       const charsPerTick = Math.ceil(text.length / ticks);
 
@@ -461,6 +551,7 @@ export function DebateRoomScreen({ navigation, route }: Props) {
         setRows((prev) =>
           prev.map((r) => (r.id === tempId ? { ...r, text: text.slice(0, shown) } : r)),
         );
+        scrollChatToEndAfterFlush();
         if (shown >= text.length) break;
       }
 
@@ -468,12 +559,9 @@ export function DebateRoomScreen({ navigation, route }: Props) {
       setRows((prev) =>
         prev.map((r) => (r.id === tempId ? { ...r, id: postId, text } : r)),
       );
-
-      // 타이핑 완료 후 잠깐 대화중 유지
-      await new Promise<void>((r) => setTimeout(r, 700));
-      setSpeakerId(null);
+      scrollChatToEndAfterFlush();
     },
-    [],
+    [scrollChatToEndAfterFlush],
   );
 
   const requestAgentReplyWithFallback = useCallback(
@@ -521,7 +609,7 @@ export function DebateRoomScreen({ navigation, route }: Props) {
       if (!lastOwlText?.trim() && !lastUserText?.trim()) {
         const choices = await buildOrderPrincipleCliChoices(userId, orderContextRef.current);
         setCliPrompt(
-          '지금 손볼 원칙을 골라 주세요. 선택하면 키문이에게 전달되고, 아래에서 언제든 나갈 수 있어요.',
+          '먼저 손볼 원칙을 골라 주세요. 고르시면 키문이에게 전해지고, 아래「점검 마치고 나가기」로 언제든 나가실 수 있어요.',
         );
         setCliChoices(choices);
         return;
@@ -577,12 +665,24 @@ export function DebateRoomScreen({ navigation, route }: Props) {
         });
       }
       setRows([...prefix, ...postRows]);
+      {
+        let lastAgent: AgentId | null = null;
+        for (let i = posts.length - 1; i >= 0; i--) {
+          const aid = isAgentUserId(posts[i].user_id);
+          if (aid) {
+            lastAgent = aid;
+            break;
+          }
+        }
+        setSpeakerId(lastAgent);
+      }
       if (isOrderPrincipleTopic && userId) {
         void refreshOrderCli(lastOwlFromPosts(posts), lastUserPostContent(posts));
       } else {
         setCliPrompt('');
         setCliChoices([]);
       }
+      listNearBottomRef.current = true;
     },
     [userId, refreshOrderCli],
   );
@@ -597,8 +697,8 @@ export function DebateRoomScreen({ navigation, route }: Props) {
       });
       return;
     }
-    const choicesForRow =
-      cliChoices.length > 0 && !sending && !agentReplying ? cliChoices : [];
+    // 전송·답변 중에도 CLI 행을 유지해야 스크롤이 위로 튀지 않음(버튼은 disabled)
+    const choicesForRow = cliChoices.length > 0 ? cliChoices : [];
     setRows((prev) => {
       const next = normalizeOrderPrincipleTail(
         prev,
@@ -750,7 +850,11 @@ export function DebateRoomScreen({ navigation, route }: Props) {
 
       if (shortLabel === ORDER_CLI_NOT_IN_LIST_CHOICE) {
         setSending(true);
+        setSpeakerId(null);
+        setIsUserTyping(true);
         try {
+          await new Promise<void>((r) => setTimeout(r, 420));
+          setIsUserTyping(false);
           const full = buildOrderPrincipleRecapItemsForDebate(orderContextRef.current);
           const excluded = full.slice(0, 2).map((x) => x.label.trim()).filter(Boolean);
           const bid = orderContextRef.current?.behaviorLogId;
@@ -765,13 +869,13 @@ export function DebateRoomScreen({ navigation, route }: Props) {
             remainder = full.slice(2).map((x) => x.label.trim()).filter(Boolean);
           }
           setCliPrompt(
-            '앞의 두 가지를 제외한 나머지 어긋난 원칙이에요. 설명받을 항목을 골라 주세요.',
+            '앞에서 고르신 두 가지 말고, 나머지에 어긋난 원칙이에요. 설명을 들을 항목을 골라 주세요.',
           );
           if (remainder.length === 0) {
             const back = await buildOrderPrincipleCliChoices(uid, orderContextRef.current);
             setCliChoices(back);
             setCliPrompt(
-              '같은 주문 기준으로 추가로 짚을 어긋남이 없어요. 위 두 가지 중 하나를 고르거나 메시지를 보내 주세요.',
+              '같은 주문 기준으로 더 짚을 어긋남은 없어요. 위 두 가지 중 하나를 고르시거나, 글로 질문해 주세요.',
             );
           } else {
             setCliChoices(remainder);
@@ -782,7 +886,7 @@ export function DebateRoomScreen({ navigation, route }: Props) {
           setPostError(e instanceof Error ? e.message : String(e));
           if (fallback.length > 0) {
             setCliPrompt(
-              '앞의 두 가지를 제외한 나머지 어긋난 원칙이에요. 설명받을 항목을 골라 주세요.',
+              '앞에서 고르신 두 가지 말고, 나머지에 어긋난 원칙이에요. 설명을 들을 항목을 골라 주세요.',
             );
             setCliChoices(fallback);
           } else {
@@ -796,19 +900,42 @@ export function DebateRoomScreen({ navigation, route }: Props) {
           }
         } finally {
           setSending(false);
+          setIsUserTyping(false);
         }
         return;
       }
 
+      setSpeakerId(null);
       setSending(true);
-      setAgentReplying(true);
-      const content = `[원칙 점검] 「${shortLabel}」부터 기준을 다시 맞출게요.`;
+      setAgentReplying(false);
+      const content = `[원칙 점검] 「${shortLabel}」부터 차근차근 맞춰 볼게요.`;
+      const optimisticId = `cli-local-${Date.now()}`;
+      setIsUserTyping(true);
       try {
-        const post = await StockmateApiV1.forum.createPost(tid, { user_id: uid, content });
+        await new Promise<void>((r) => setTimeout(r, 400));
         setRows((prev) => [
           ...prev,
-          { kind: 'post', id: post.id, userId: post.user_id, text: post.content, mine: true },
+          {
+            kind: 'post' as const,
+            id: optimisticId,
+            userId: uid,
+            text: `「${shortLabel}」을(를) 골랐어요`,
+            mine: true,
+          },
         ]);
+        setIsUserTyping(false);
+        await new Promise<void>((r) => setTimeout(r, 180));
+        const post = await StockmateApiV1.forum.createPost(tid, { user_id: uid, content });
+        setRows((prev) => {
+          const base = prev.filter((r) => r.id !== optimisticId);
+          return [
+            ...base,
+            { kind: 'post', id: post.id, userId: post.user_id, text: post.content, mine: true },
+          ];
+        });
+        listNearBottomRef.current = true;
+        setSending(false);
+        setAgentReplying(true);
         const reply1 = await requestAgentReplyWithFallback(tid, content);
         await addAgentTyping(
           reply1.agent_id as AgentId,
@@ -819,10 +946,12 @@ export function DebateRoomScreen({ navigation, route }: Props) {
         void refreshOrderCli(reply1.content, content);
         void refreshOrderPrincipleTopicTitle();
       } catch (e) {
+        setRows((prev) => prev.filter((r) => r.id !== optimisticId));
         setPostError(e instanceof Error ? e.message : String(e));
       } finally {
         setSending(false);
         setAgentReplying(false);
+        setIsUserTyping(false);
       }
     },
     [
@@ -874,17 +1003,19 @@ export function DebateRoomScreen({ navigation, route }: Props) {
   // ── 메시지 전송 ───────────────────────────────────────────────────────────────
   const onSend = async () => {
     const raw = input.trim();
-    if (!raw || sending || !userId || !topicId || initLoading || initError) return;
+    if (!raw || sending || agentReplying || !userId || !topicId || initLoading || initError) return;
     const broadcastAll = BROADCAST_CMD.test(raw);
     const content = broadcastAll ? raw.replace(BROADCAST_CMD, '').trim() : raw;
     if (!content) return;
     Keyboard.dismiss();
     setInput('');
+    setSpeakerId(null);
     setSending(true);
     setPostError(null);
     const postBody = broadcastAll ? `[전체 에이전트에게] ${content}` : content;
     try {
       const post = await StockmateApiV1.forum.createPost(topicId, { user_id: userId, content: postBody });
+      listNearBottomRef.current = true;
       setRows((prev) => [
         ...prev,
         { kind: 'post', id: post.id, userId: post.user_id, text: post.content, mine: true },
@@ -972,7 +1103,6 @@ export function DebateRoomScreen({ navigation, route }: Props) {
         ]);
       } finally {
         setAgentReplying(false);
-        setSpeakerId(null);
       }
     } catch (e) {
       setInput(raw);
@@ -988,12 +1118,12 @@ export function DebateRoomScreen({ navigation, route }: Props) {
       const full = orderPrincipleRecapFull;
       const recapSub =
         full.length >= 3
-          ? '어긋난 원칙을 모두 보여 드려요. 1·2번과 다른 부분을 짚고 싶으면「다음 행동」3번「여기에 없어요」를 눌러 주세요.'
-          : '아래「다음 행동」에서 이어질 행동을 골라 주세요.';
+          ? '지금 주문과 안 맞을 수 있는 원칙을 모두 적었어요. 1·2번이 아닌 다른 점을 보시려면「다음 행동」에서 3번「여기에 없어요」를 눌러 주세요.'
+          : '아래「다음 행동」에서 이어서 하실 일을 골라 주세요.';
       return (
         <View style={styles.msgRow}>
           <View style={styles.recapCard}>
-            <Text style={styles.recapCardTitle}>맞물릴 수 있는 원칙</Text>
+            <Text style={styles.recapCardTitle}>위반 원칙</Text>
             <Text style={styles.recapCardSub}>{recapSub}</Text>
             <View style={styles.recapList}>
               {item.items.map((row, idx) => (
@@ -1081,8 +1211,11 @@ export function DebateRoomScreen({ navigation, route }: Props) {
 
   const listFooter = (
     <View style={styles.listFooterCol}>
-      {sending ? <Text style={styles.thinking}>메시지 전송 중…</Text> : null}
-      {agentReplying ? <Text style={styles.thinking}>AI 에이전트가 답변 중이에요…</Text> : null}
+      {sending || agentReplying ? (
+        <Text style={styles.thinking}>
+          {agentReplying ? '키문이가 천천히 답을 쓰고 있어요…' : '보내는 중이에요…'}
+        </Text>
+      ) : null}
     </View>
   );
 
@@ -1130,13 +1263,17 @@ export function DebateRoomScreen({ navigation, route }: Props) {
             style={styles.chatList}
             contentContainerStyle={[
               styles.chatListContent,
-              owlOnlyMode && topicId ? styles.chatListContentNoGrow : styles.chatListContentGrow,
+              styles.chatListContentGrow,
               { paddingBottom: 28 + keyboardExtraPad },
             ]}
             keyboardShouldPersistTaps="handled"
             keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+            nestedScrollEnabled
             renderItem={renderItem}
             ListFooterComponent={listFooter}
+            onScroll={onScrollChatList}
+            scrollEventThrottle={24}
+            onContentSizeChange={() => scrollChatToEnd(false, false)}
           />
         )}
 
@@ -1152,44 +1289,68 @@ export function DebateRoomScreen({ navigation, route }: Props) {
           </Pressable>
         ) : null}
 
-        <View style={[styles.inputBar, { paddingBottom: Math.max(insets.bottom, 10) }]}>
-          <Ionicons name="chatbubbles-outline" size={24} color="#B0A8D0" style={styles.inputIcon} />
-          <TextInput
-            value={input}
-            onChangeText={(v) => { setInput(v); setIsUserTyping(v.length > 0); }}
-            onBlur={() => setIsUserTyping(false)}
-            placeholder={
-              topicId
-                ? owlOnlyMode
-                  ? '키문이(원칙 코치)에게 메시지…'
-                  : '댓글 입력…  (/all 또는 /전체 로 세 에이전트 순서 응답)'
-                : '연결 후 입력 가능'
-            }
-            placeholderTextColor="rgba(255,255,255,0.4)"
-            style={styles.input}
-            onSubmitEditing={onSend}
-            returnKeyType="send"
-            multiline={false}
-            editable={!!topicId && !initLoading && !sending}
-          />
-          <Pressable
-            onPress={onSend}
-            style={[styles.sendFab, (!input.trim() || !topicId || sending) && styles.sendFabOff]}
-            disabled={!input.trim() || !topicId || sending}
-          >
-            <Ionicons name="send" size={20} color="#fff" />
-          </Pressable>
-        </View>
+        {!(owlOnlyMode && (sending || agentReplying)) ? (
+          <View style={[styles.inputBar, { paddingBottom: Math.max(insets.bottom, 10) }]}>
+            <Ionicons name="chatbubbles-outline" size={24} color="#B0A8D0" style={styles.inputIcon} />
+            <TextInput
+              value={input}
+              onChangeText={(v) => { setInput(v); setIsUserTyping(v.length > 0); }}
+              onBlur={() => setIsUserTyping(false)}
+              placeholder={
+                topicId
+                  ? owlOnlyMode
+                    ? '키문이(원칙 코치)에게 메시지…'
+                    : '댓글 입력…  (/all 또는 /전체 로 세 에이전트 순서 응답)'
+                  : '연결 후 입력 가능'
+              }
+              placeholderTextColor="rgba(255,255,255,0.4)"
+              style={styles.input}
+              onSubmitEditing={onSend}
+              returnKeyType="send"
+              multiline={false}
+              editable={!!topicId && !initLoading && !sending && !agentReplying}
+            />
+            <Pressable
+              onPress={onSend}
+              style={[
+                styles.sendFab,
+                (!input.trim() || !topicId || sending || agentReplying) && styles.sendFabOff,
+              ]}
+              disabled={!input.trim() || !topicId || sending || agentReplying}
+            >
+              <Ionicons name="send" size={20} color="#fff" />
+            </Pressable>
+          </View>
+        ) : null}
       </View>
 
-      {/* 상단 투명 바 */}
+      {/* 상단 투명 바 — 점검방(주문 전)은 뒤로가기 대신 하단「점검 마치고 나가기」만 사용 */}
       <View style={[styles.topBar, { paddingTop: insets.top + 8 }]} pointerEvents="box-none">
-        <Pressable onPress={() => navigation.goBack()} hitSlop={12} style={styles.backHit}>
-          <Ionicons name="chevron-back" size={28} color="#fff" />
-        </Pressable>
+        {owlOnlyMode ? (
+          <View style={styles.backHit} />
+        ) : (
+          <Pressable onPress={() => navigation.goBack()} hitSlop={12} style={styles.backHit}>
+            <Ionicons name="chevron-back" size={28} color="#fff" />
+          </Pressable>
+        )}
         <View style={styles.topTitles}>
-          <Text style={styles.serviceTitle}>인공지능 비즈니스 분석 서비스</Text>
-          <Text style={styles.screenTitle} numberOfLines={1}>{topicTitle}</Text>
+          {!debateHeaderCompact ? (
+            <Text style={styles.serviceTitle}>인공지능 비즈니스 분석 서비스</Text>
+          ) : null}
+          <Text
+            style={[styles.screenTitle, debateHeaderCompact && styles.screenTitleCompact]}
+            numberOfLines={debateHeaderCompact ? 4 : 2}
+          >
+            {debateCompactTitleParts ? (
+              <>
+                <Text style={styles.screenTitlePrimary}>{debateCompactTitleParts.primary}</Text>
+                {'\n'}
+                <Text style={styles.screenTitleSecondary}>{debateCompactTitleParts.secondary}</Text>
+              </>
+            ) : (
+              debateScreenTitle
+            )}
+          </Text>
         </View>
         {owlOnlyMode && paramStockCode ? (
           <Pressable
@@ -1314,9 +1475,22 @@ const styles = StyleSheet.create({
   topTitles:    { flex: 1, alignItems: 'center' },
   serviceTitle: { color: 'rgba(255,255,255,0.85)', fontSize: 11, fontWeight: '700' },
   screenTitle:  { color: '#fff', fontSize: 18, fontWeight: '900', marginTop: 2 },
+  /** 서비스 한 줄을 숨길 때(주문 전 점검·섹터 공론장) — 두 줄 제목 가운데 정렬 */
+  screenTitleCompact: { marginTop: 0, textAlign: 'center' },
+  screenTitlePrimary: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: '900',
+    lineHeight: 24,
+  },
+  screenTitleSecondary: {
+    color: 'rgba(255,255,255,0.72)',
+    fontSize: 15,
+    fontWeight: '600',
+    lineHeight: 21,
+  },
   listFooterCol: { paddingBottom: 8, gap: 6, alignSelf: 'stretch' },
   chatListContentGrow: { flexGrow: 1 },
-  chatListContentNoGrow: { flexGrow: 0 },
   cliInlinePanel: { marginTop: 4, marginBottom: 2 },
   recapCard: {
     alignSelf: 'stretch',
@@ -1331,7 +1505,7 @@ const styles = StyleSheet.create({
   recapCardTitle: {
     fontSize: 13,
     fontWeight: '800',
-    color: '#0D5DBA',
+    color: '#7D3BDD',
     marginBottom: 4,
   },
   recapCardSub: {

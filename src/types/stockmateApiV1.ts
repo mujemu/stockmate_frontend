@@ -66,11 +66,38 @@ export type PrinciplesStatusDto = {
   is_configured: boolean;
   rankings: PrincipleRankingItem[];
   configured_at?: string | null;
+  /** 서버가 내려주면 월간 수정 잔여 등에 사용 */
   updated_at?: string | null;
+  /** Supabase `user_principle_params` — 원칙 id → 파라미터 맵 */
+  params?: Record<string, Record<string, number>> | null;
+};
+
+/** `POST /api/v1/holdings/user/{user_id}/apply-trade` */
+export type SimulatedTradeApplyBody = {
+  side: 'buy' | 'sell';
+  stock_code?: string | null;
+  stock_name: string;
+  quantity: number;
+  limit_price_won: number;
+};
+
+/** `GET /api/v1/holdings/user/{user_id}/simulated` */
+export type SimulatedHoldingDto = {
+  stock_code: string | null;
+  stock_name: string;
+  quantity: number;
+  total_cost_won: number;
+  last_mark_won: number;
+  eval_won: number;
+  pnl_won: number;
+  pnl_pct: number;
 };
 
 export type PrincipleSetupRankItem = { principle_id: string; rank: number };
-export type PrinciplesSetupBody = { rankings: PrincipleSetupRankItem[] };
+export type PrinciplesSetupBody = {
+  rankings: PrincipleSetupRankItem[];
+  params?: Record<string, Record<string, number>>;
+};
 export type PrinciplesReorderBody = { rankings: PrincipleSetupRankItem[] };
 
 /** `GET /api/v1/sectors` — 백엔드 SectorSummaryOut (`key` = 섹터 식별자) */
@@ -139,6 +166,7 @@ export type BehaviorLogDto = {
   behavior_type: string;
   is_rule_violation: boolean;
   user_memo: string | null;
+  context_data?: Record<string, unknown> | null;
   intervention_sent: boolean;
   user_decision: string | null;
   intervention_state: string | null;
@@ -171,6 +199,12 @@ export type BehaviorLogCreateResponse = {
 
 export type PatchBehaviorLogStateBody = { state: InterventionState };
 export type PatchBehaviorLogDecisionBody = { decision: UserDecision };
+
+export type BehaviorLogSimulatedFillBody = {
+  user_id: string;
+  quantity: number;
+  limit_price_won: number;
+};
 
 export type ViolationsRemainingBody = {
   user_id: string;
@@ -213,6 +247,17 @@ export type ComplianceMonthDto = {
   total: number;
   violations: number;
   compliance_rate: number;
+};
+
+/** `GET /api/v1/reports/user/{user_id}/principle-stats` */
+export type PrincipleStatMonthDto = {
+  principle_id: string;
+  violation_count: number;
+  /** 모의 체결 시 '점검에서 제외된' 순위권 원칙(한 건당 1회) */
+  practice_ok_count?: number;
+  rank: number | null;
+  text: string;
+  category: string;
 };
 
 /** 백엔드 forum_topics.room_kind — 주문 전 원칙 점검 전용 방 */

@@ -6,7 +6,7 @@
  */
 import React, { useEffect, useRef } from 'react';
 import type { DimensionValue } from 'react-native';
-import { Animated, StyleSheet, Text, View } from 'react-native';
+import { Animated, Platform, StyleSheet, Text, View } from 'react-native';
 import { useVideoPlayer, VideoView } from 'expo-video';
 
 // ── 영상 소스 ────────────────────────────────────────────────────────────────
@@ -110,17 +110,40 @@ export const ForumHeroStage = React.memo(function ForumHeroStage({ speakerId, is
     const allOps: Record<VideoKey, Animated.Value> = {
       idle: opIdle, typing: opTyping, eagle: opEagle, owl: opOwl, turtle: opTurtle,
     };
+    const players = { idle: pIdle, typing: pTyping, eagle: pEagle, owl: pOwl, turtle: pTurtle };
 
     // 새 영상을 최상위로 올린 뒤 fade in만 실행
-    // — 이전 영상은 opacity 1 그대로 유지 → 새 영상 아래에서 배경 역할
-    // — 새 영상 fade in 완료 후 이전 영상을 HIDDEN으로 즉시 리셋 (새 영상이 덮고 있으므로 안 보임)
+    // — 캐릭터가 말할 때는 배경(idle)을 완전히 끄지 않고 어둡게 남겨 영상이 "멈춘 것처럼" 보이지 않게 함
     setTopKey(currentKey);
+    try {
+      players[currentKey].play();
+    } catch {
+      /* 일부 기기에서 play 생략 */
+    }
     Animated.timing(allOps[currentKey], {
       toValue: 1,
-      duration: 250,
+      duration: 280,
       useNativeDriver: true,
     }).start(() => {
-      allOps[prev].setValue(HIDDEN);
+      const speaking =
+        currentKey === 'eagle' || currentKey === 'owl' || currentKey === 'turtle';
+      if (speaking) {
+        opIdle.setValue(0.34);
+        (Object.keys(allOps) as VideoKey[]).forEach((k) => {
+          if (k === currentKey || k === 'idle') return;
+          allOps[k].setValue(HIDDEN);
+        });
+        if (prev !== 'idle' && prev !== currentKey) {
+          allOps[prev].setValue(HIDDEN);
+        }
+      } else {
+        allOps[prev].setValue(HIDDEN);
+      }
+      try {
+        players[currentKey].play();
+      } catch {
+        /* */
+      }
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentKey]);
@@ -148,12 +171,22 @@ export const ForumHeroStage = React.memo(function ForumHeroStage({ speakerId, is
           />
         </Animated.View>
       ))}
-      <AgentBadges speakerId={speakerId} agents={agents} />
+      {/* VideoView 네이티브 레이어가 형제 뷰를 덮는 경우가 있어 배지는 항상 최상위 */}
+      <View
+        style={[StyleSheet.absoluteFill, styles.agentBadgeLayer]}
+        pointerEvents="none"
+      >
+        <AgentBadges speakerId={speakerId} agents={agents} />
+      </View>
     </View>
   );
 });
 
 const styles = StyleSheet.create({
+  agentBadgeLayer: {
+    zIndex: 40,
+    ...(Platform.OS === 'android' ? { elevation: 40 } : {}),
+  },
   badge: {
     position: 'absolute',
     alignItems: 'center',

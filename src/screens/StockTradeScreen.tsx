@@ -1,37 +1,17 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import {
-  ActivityIndicator,
-  Image,
-  Modal,
-  Platform,
-  Pressable,
-  ScrollView,
-  StatusBar,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
+import React, { useCallback, useState } from 'react';
+import { Image, Pressable, ScrollView, StatusBar, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { KiwoomOrderQuantitySheet } from '../components/KiwoomOrderQuantitySheet';
 import { StockDailyFluctuationAlertCard } from '../components/stockExplore/StockDailyFluctuationAlertCard';
 import { StockExploreSectionDivider } from '../components/stockExplore/StockExploreSectionDivider';
 import { StockMyHoldingsSection } from '../components/stockExplore/StockMyHoldingsSection';
 import { StockTradeChartBlock } from '../components/StockTradeChartBlock';
 import { Colors } from '../config/colors';
-import { buildKimooniOrderViolationPreview } from '../config/orderPrincipleViolationCopy';
-import type { OrderPrincipleViolationDetailDto } from '../types/stockmateApiV1';
-import {
-  STOCK_TRADE_UI_KEYS,
-  getStockOrderModalCopy,
-  getStockTradeUi,
-  resolveStockOrderPriceWon,
-} from '../config/stockTradeDetail';
+import { STOCK_TRADE_UI_KEYS, getStockTradeUi } from '../config/stockTradeDetail';
 import { useUserSession } from '../context/UserSessionContext';
-import { navigationRef } from '../navigation/navigationRef';
-import type { ViolationLedger } from '../services/principleViolationLedger';
-import { recordPostTradeViolation } from '../services/principleViolationLedger';
 import { StockmateApiV1 } from '../services/stockmateApiV1';
+import type { SimulatedHoldingDto } from '../types/stockmateApiV1';
 
 interface Props {
   navigation: any;
@@ -46,22 +26,12 @@ interface Props {
   };
 }
 
-const STOCK_LOGO: Record<string, ReturnType<typeof require>> = {
-  키움증권: require('../../assets/logos/kiwoom.png'),
-  삼성전자: require('../../assets/logos/samsung_new.png'),
-  삼성E앤에이: require('../../assets/logos/samsung_new.png'),
-  '삼성E&A': require('../../assets/logos/samsung_new.png'),
-  SK하이닉스: require('../../assets/logos/skhynix_new.png'),
-  에이피알: require('../../assets/logos/apr.png'),
-  아모레퍼시픽: require('../../assets/logos/amorepacific.png'),
-};
-
-const OCTOPUS_GUARD_AVATAR = require('../../assets/services/guard_octopus.png');
 const CHART_TAB_ICON = require('../../assets/icons/chart.png');
 
 export function StockTradeScreen({ navigation, route }: Props) {
   const insets = useSafeAreaInsets();
-  const { userId, ready: userReady } = useUserSession();
+  const { userId, ready: sessionReady } = useUserSession();
+  const [holdings, setHoldings] = useState<SimulatedHoldingDto[]>([]);
   const stockName = route.params?.stockName ?? '삼성전자';
   const stockCode = route.params?.stockCode;
   const sectorKey = route.params?.sectorKey;
@@ -71,227 +41,24 @@ export function StockTradeScreen({ navigation, route }: Props) {
   const useBuiltUi = STOCK_TRADE_UI_KEYS.has(stockName);
   const d = useBuiltUi ? getStockTradeUi(stockName) : null;
 
-  const [orderType, setOrderType] = useState<'buy' | 'sell'>('buy');
-  const [quantity, setQuantity] = useState('1');
-  const defaultLimitPrice = useMemo(
-    () => resolveStockOrderPriceWon(stockName, stockPriceParam),
-    [stockName, stockPriceParam],
+  useFocusEffect(
+    useCallback(() => {
+      if (!sessionReady || !userId) return;
+      void StockmateApiV1.holdings
+        .listSimulated(userId)
+        .then(setHoldings)
+        .catch(() => setHoldings([]));
+    }, [sessionReady, userId]),
   );
-  const [limitPrice, setLimitPrice] = useState(defaultLimitPrice);
-  useEffect(() => {
-    setLimitPrice(defaultLimitPrice);
-  }, [defaultLimitPrice]);
-
-  const [orderModalPhase, setOrderModalPhase] = useState<'quantitySheet' | 'done' | null>(null);
-  const [sheetMountKey, setSheetMountKey] = useState(0);
-  const [submittingOrder, setSubmittingOrder] = useState(false);
-  const [activeBehaviorLogId, setActiveBehaviorLogId] = useState<string | null>(null);
-  const [interventionMessage, setInterventionMessage] = useState<string | null>(null);
-  const [violatedPrinciples, setViolatedPrinciples] = useState<string[]>([]);
-  const [violationDetails, setViolationDetails] = useState<OrderPrincipleViolationDetailDto[]>([]);
-  const [postTradeLedger, setPostTradeLedger] = useState<ViolationLedger | null>(null);
-  const [postTradeViolationsExpanded, setPostTradeViolationsExpanded] = useState(false);
-  const [doneLedgerToken, setDoneLedgerToken] = useState(0);
-  const doneLedgerConsumedRef = useRef(-1);
-
-  const totalPrice = useMemo(() => {
-    const qty = parseInt(quantity || '0', 10);
-    const p = parseInt(limitPrice || '0', 10);
-    return (qty * p).toLocaleString('ko-KR');
-  }, [quantity, limitPrice]);
-
-  const stockLogo = STOCK_LOGO[stockName];
-  const hasDecisionViolation =
-    violatedPrinciples.length > 0 || Boolean(interventionMessage?.trim());
-  const previewViolationMessage = interventionMessage
-    ? interventionMessage
-    : hasDecisionViolation
-      ? `${stockName} ${orderType === 'buy' ? '매수' : '매도'}는 설정해 둔 투자 원칙과 맞지 않을 수 있어요.`
-      : '지금 표시된 원칙 점검에서는 우선 손볼 만한 충돌 신호는 없어요.';
-
-  /** 서버가 준 순서(저장한 원칙 순위) 기준 앵커 — 공론장·후속 점검에 전달 */
-  const orderViolationPreview = useMemo(
-    () =>
-      buildKimooniOrderViolationPreview(
-        violatedPrinciples,
-        orderType,
-        interventionMessage,
-        violationDetails,
-      ),
-    [violatedPrinciples, orderType, interventionMessage, violationDetails],
-  );
-
-  const topViolationLabel =
-    orderViolationPreview.primaryLabel ??
-    violatedPrinciples.map((s) => String(s).trim()).find(Boolean) ??
-    null;
-
-  const useKimooniBulletMode =
-    hasDecisionViolation && !submittingOrder && orderViolationPreview.bullets.length > 0;
-
-  const kimooniCoachTitle = hasDecisionViolation
-    ? '키문이: 원칙 위반 감지'
-    : '키문이: 원칙 관점에서 한번 더 짚어볼게요';
-
-  const kimooniLead =
-    hasDecisionViolation
-      ? '수량·가격을 조정하거나, 공론장에서 논의한 뒤 다시 시도해 보세요!'
-      : undefined;
-
-  const kimooniCoachBody = useMemo(() => {
-    if (interventionMessage?.trim()) {
-      const tail = topViolationLabel
-        ? `\n\n가장 먼저 짚을 원칙: 「${topViolationLabel}」 — 왜 충돌나는지는 위 한 줄 요약을 참고하고, 공론장에서 키문이와 맞춰 가 보세요.`
-        : '\n\n공론장에서 키문이와 근거를 나눠 보시겠어요?';
-      return `${interventionMessage.trim()}${tail}`;
-    }
-    if (hasDecisionViolation) {
-      return `${previewViolationMessage}${topViolationLabel ? `\n\n우선 점검: 「${topViolationLabel}」` : ''}\n\n수량·가격을 조정하거나, 공론장에서 논의한 뒤 다시 시도해 보세요.`;
-    }
-    return `${previewViolationMessage}\n\n그래도 분할·기록 습관은 유지하는 게 좋아요.`;
-  }, [
-    interventionMessage,
-    hasDecisionViolation,
-    previewViolationMessage,
-    topViolationLabel,
-  ]);
-
-  const orderModalCopy = useMemo(
-    () => getStockOrderModalCopy(stockName, orderType),
-    [stockName, orderType],
-  );
-
-  const postTradePrincipleLines = useMemo(() => {
-    if (!postTradeLedger?.principleCounts) return [] as string[];
-    return Object.entries(postTradeLedger.principleCounts)
-      .filter(([, n]) => n > 0)
-      .sort((a, b) => b[1] - a[1])
-      .map(([label, n]) => `「${label}」 누적 ${n}회`);
-  }, [postTradeLedger]);
-
-  const goPrinciplesReport = () => {
-    closeOrderModal();
-    if (navigationRef.isReady()) {
-      navigationRef.navigate('Principles' as never);
-    }
-  };
 
   const openInput = (type: 'buy' | 'sell') => {
-    setOrderType(type);
-    setActiveBehaviorLogId(null);
-    setInterventionMessage(null);
-    setViolatedPrinciples([]);
-    setViolationDetails([]);
-    setPostTradeLedger(null);
-    setPostTradeViolationsExpanded(false);
-    doneLedgerConsumedRef.current = -1;
-    setSheetMountKey((k) => k + 1);
-    setOrderModalPhase('quantitySheet');
-  };
-
-  useEffect(() => {
-    if (orderModalPhase !== 'quantitySheet' || !userReady || !userId) return undefined;
-    let cancelled = false;
-    (async () => {
-      setSubmittingOrder(true);
-      try {
-        const bl = await StockmateApiV1.behaviorLogs.create({
-          user_id: userId,
-          behavior_type: orderType === 'buy' ? 'normal_buy' : 'normal_sell',
-          stock_code: stockCode ?? null,
-          stock_name: stockName,
-          sector_key: sectorKey ?? null,
-        });
-        if (cancelled) return;
-        if (bl.log?.id) setActiveBehaviorLogId(bl.log.id);
-        setInterventionMessage(bl.intervention_message ?? null);
-        setViolatedPrinciples(bl.violated_principles ?? []);
-        setViolationDetails(
-          Array.isArray(bl.violation_details) ? bl.violation_details.filter(Boolean) : [],
-        );
-        if (bl.intervention_message && bl.log?.id) {
-          StockmateApiV1.behaviorLogs.patchState(bl.log.id, { state: 'delivered' }).catch(() => {});
-        }
-      } catch {
-        /* 오프라인 시 개입·원칙 목록은 UI 기본값 유지 */
-      } finally {
-        if (!cancelled) setSubmittingOrder(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    orderModalPhase,
-    sheetMountKey,
-    userReady,
-    userId,
-    orderType,
-    stockCode,
-    stockName,
-    sectorKey,
-  ]);
-
-  useEffect(() => {
-    if (orderModalPhase !== 'done' || !userReady || !userId) return;
-    if (doneLedgerConsumedRef.current === doneLedgerToken) return;
-    doneLedgerConsumedRef.current = doneLedgerToken;
-    let cancelled = false;
-    (async () => {
-      try {
-        const ledger = await recordPostTradeViolation(
-          userId,
-          violatedPrinciples.map((s) => String(s).trim()).filter(Boolean),
-          { orderHadViolation: hasDecisionViolation },
-        );
-        if (!cancelled) setPostTradeLedger(ledger);
-      } catch {
-        if (!cancelled) setPostTradeLedger(null);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    orderModalPhase,
-    doneLedgerToken,
-    userReady,
-    userId,
-    hasDecisionViolation,
-    violatedPrinciples,
-  ]);
-
-  const onQuantitySheetConfirm = () => {
-    setPostTradeViolationsExpanded(false);
-    setDoneLedgerToken((t) => t + 1);
-    setOrderModalPhase('done');
-  };
-
-  const closeOrderModal = () => {
-    setOrderModalPhase(null);
-    setActiveBehaviorLogId(null);
-  };
-
-  const onGoDebateRoomBeforeOrder = () => {
-    closeOrderModal();
-    navigation.navigate({
-      name: 'DebateRoom',
-      merge: false,
-      params: {
-        stockCode,
-        stockName,
-        sectorKey,
-        forumEntrySource: 'order_principle_check',
-        orderContext: {
-          fromOrderFlow: true,
-          orderType,
-          violatedPrinciples,
-          interventionMessage: interventionMessage ?? undefined,
-          topViolation: topViolationLabel ?? undefined,
-          behaviorLogId: activeBehaviorLogId ?? undefined,
-          violationDetails: violationDetails.length > 0 ? violationDetails : undefined,
-        },
-      },
+    navigation.navigate('StockOrderQuantity', {
+      orderType: type,
+      stockName,
+      stockCode,
+      sectorKey,
+      stockPrice: stockPriceParam,
+      stockChange,
     });
   };
 
@@ -417,7 +184,7 @@ export function StockTradeScreen({ navigation, route }: Props) {
         )}
         <StockDailyFluctuationAlertCard />
         <StockExploreSectionDivider />
-        <StockMyHoldingsSection />
+        <StockMyHoldingsSection holdings={holdings} highlightStockName={stockName} />
         <View style={styles.card}>
           <Text style={styles.sectionTitle}>종목정보</Text>
           {useBuiltUi && d ? (
@@ -443,155 +210,6 @@ export function StockTradeScreen({ navigation, route }: Props) {
           <Text style={styles.orderText}>살게요</Text>
         </Pressable>
       </View>
-
-      <Modal
-        visible={orderModalPhase !== null}
-        animationType="slide"
-        transparent
-        presentationStyle={Platform.OS === 'ios' ? 'overFullScreen' : undefined}
-        statusBarTranslucent
-      >
-        <View style={styles.orderModalWrap}>
-          <SafeAreaView
-            style={[styles.quantitySheetFullscreen, { backgroundColor: '#EFEFF4' }]}
-            edges={['top', 'left', 'right']}
-          >
-            <KiwoomOrderQuantitySheet
-              orderType={orderType}
-              stockName={stockName}
-              displayCurrentPrice={stockPrice}
-              displayChange={stockChange}
-              limitPriceWon={limitPrice}
-              onLimitPriceChange={setLimitPrice}
-              quantity={quantity}
-              onQuantityChange={setQuantity}
-              onSubmit={onQuantitySheetConfirm}
-              onClose={closeOrderModal}
-              bottomInset={insets.bottom}
-              loadingBehavior={submittingOrder}
-              kimooniTitle={kimooniCoachTitle}
-              kimooniScoreLine={
-                hasDecisionViolation && !submittingOrder ? orderViolationPreview.scoreLine : undefined
-              }
-              kimooniBullets={useKimooniBulletMode ? orderViolationPreview.bullets : undefined}
-              kimooniMoreInForumCount={
-                useKimooniBulletMode ? orderViolationPreview.moreInForumCount : undefined
-              }
-              kimooniLead={useKimooniBulletMode ? kimooniLead : undefined}
-              kimooniBody={useKimooniBulletMode ? undefined : kimooniCoachBody}
-              onOpenDebate={onGoDebateRoomBeforeOrder}
-            />
-          </SafeAreaView>
-          {orderModalPhase === 'done' ? (
-            <View style={styles.doneOverlayRoot}>
-              <Pressable style={styles.modalDim} onPress={closeOrderModal} />
-              <View style={styles.modalCard}>
-                <ScrollView
-                  keyboardShouldPersistTaps="handled"
-                  showsVerticalScrollIndicator={false}
-                  bounces={false}
-                >
-                  <Text style={[styles.modalTitle, styles.doneTitle]}>
-                    {orderType === 'buy' ? '매수 주문을 완료했어요' : '매도 주문을 완료했어요'}
-                  </Text>
-                  <View style={styles.stockBrief}>
-                    {stockLogo != null ? (
-                      <Image source={stockLogo} style={styles.stockBriefLogo} resizeMode="contain" />
-                    ) : (
-                      <View style={styles.logoMock} />
-                    )}
-                    <Text style={styles.stockBriefTxt}>{stockName}</Text>
-                  </View>
-                  <View style={styles.confirmGrid}>
-                    <View style={styles.confirmRow}>
-                      <Text style={styles.confirmLabel}>주문구분</Text>
-                      <Text style={styles.confirmValue}>{orderType === 'buy' ? '매수' : '매도'}</Text>
-                    </View>
-                    <View style={styles.confirmRow}>
-                      <Text style={styles.confirmLabel}>주문수량</Text>
-                      <Text style={styles.confirmValue}>{quantity}주</Text>
-                    </View>
-                    <View style={styles.confirmRow}>
-                      <Text style={styles.confirmLabel}>주문가격</Text>
-                      <Text style={[styles.confirmValue, styles.orderPriceRed]}>
-                        {parseInt(limitPrice || '0', 10).toLocaleString('ko-KR')}원
-                      </Text>
-                    </View>
-                    <View style={styles.confirmRow}>
-                      <Text style={styles.confirmLabel}>총 주문금액</Text>
-                      <Text style={[styles.confirmValue, styles.totalAmountStrong]}>{totalPrice}원</Text>
-                    </View>
-                  </View>
-                  <View style={styles.principleCard}>
-                    <View style={styles.guardCircle}>
-                      <Image source={OCTOPUS_GUARD_AVATAR} style={styles.kimooniAvatar} resizeMode="cover" />
-                    </View>
-                    <View style={styles.principleBody}>
-                      {hasDecisionViolation ? (
-                        <>
-                          <Text style={styles.principleTitle}>이번 주문은 원칙과 어긋난 거래로 집계됐어요</Text>
-                          <Text style={styles.principleDesc}>
-                            {interventionMessage ??
-                              `${stockName} ${orderType === 'buy' ? '매수' : '매도'}에서 미리 잡아둔 기준과 맞지 않을 수 있어요.`}
-                          </Text>
-                          {postTradeLedger ? (
-                            <>
-                              <Text style={styles.strikeLine}>
-                                누적 위반 {postTradeLedger.globalStrikes}회
-                              </Text>
-                              {postTradePrincipleLines.length > 0 ? (
-                                <>
-                                  <Text style={styles.violationList}>
-                                    {postTradeViolationsExpanded
-                                      ? postTradePrincipleLines.join('\n')
-                                      : postTradePrincipleLines[0]}
-                                  </Text>
-                                  {postTradePrincipleLines.length > 1 ? (
-                                    <Pressable
-                                      style={styles.violationToggleBtn}
-                                      onPress={() =>
-                                        setPostTradeViolationsExpanded((v) => !v)
-                                      }
-                                      hitSlop={8}
-                                    >
-                                      <Text style={styles.violationToggleTxt}>
-                                        {postTradeViolationsExpanded ? '접기' : '더보기'}
-                                      </Text>
-                                    </Pressable>
-                                  ) : null}
-                                </>
-                              ) : null}
-                            </>
-                          ) : (
-                            <ActivityIndicator color={Colors.primary} style={{ marginTop: 8 }} />
-                          )}
-                          <Text style={styles.principleLead}>
-                            투자 원칙 리포트에서 수정·저장하면, 이번 수정 경로에 따라 누적이 정리돼요.
-                          </Text>
-                          {postTradeLedger && postTradeLedger.globalStrikes >= 5 ? (
-                            <Pressable style={styles.principlesCta} onPress={goPrinciplesReport}>
-                              <Text style={styles.principlesCtaTxt}>투자 원칙 리포트 보기</Text>
-                            </Pressable>
-                          ) : null}
-                        </>
-                      ) : (
-                        <>
-                          <Text style={styles.principleTitle}>{orderModalCopy.donePrincipleTitle}</Text>
-                          <Text style={styles.principleDesc}>{orderModalCopy.donePrincipleDesc}</Text>
-                          <Text style={styles.principleLead}>원칙을 잘 지키셨어요. 차분한 판단이에요.</Text>
-                        </>
-                      )}
-                    </View>
-                  </View>
-                  <Pressable style={[styles.primaryBtn, styles.doneConfirmBtn]} onPress={closeOrderModal}>
-                    <Text style={styles.primaryText}>확인</Text>
-                  </Pressable>
-                </ScrollView>
-              </View>
-            </View>
-          ) : null}
-        </View>
-      </Modal>
     </SafeAreaView>
   );
 }
@@ -739,131 +357,6 @@ const styles = StyleSheet.create({
   sell: { backgroundColor: '#6F64F2' },
   buy: { backgroundColor: '#FF5579' },
   orderText: { color: '#fff', fontSize: 17, fontWeight: '800' },
-  /** 수량 시트 + 완료 오버레이를 한 Modal 안에서 겹침 */
-  orderModalWrap: { flex: 1, backgroundColor: '#EFEFF4' },
-  doneOverlayRoot: {
-    ...StyleSheet.absoluteFillObject,
-    justifyContent: 'flex-end',
-    backgroundColor: 'transparent',
-  },
-  modalDim: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.45)',
-  },
-  modalCard: {
-    backgroundColor: '#fff',
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    padding: 20,
-    marginTop: 30,
-    maxHeight: '82%',
-  },
-  quantitySheetCard: {
-    width: '100%',
-    marginTop: 56,
-    maxHeight: '66%',
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    overflow: 'hidden',
-    backgroundColor: '#EFEFF4',
-    flexGrow: 1,
-  },
-  quantitySheetFullscreen: {
-    flex: 1,
-    backgroundColor: '#EFEFF4',
-  },
-  modalTitle: { fontSize: 28, fontWeight: '800', color: Colors.text, marginBottom: 12 },
-  doneTitle: { color: Colors.primary, textAlign: 'center' },
-  input: {
-    borderWidth: 1,
-    borderColor: '#E5E8F5',
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-    fontSize: 24,
-    marginBottom: 10,
-  },
-  modalRow: { flexDirection: 'row', gap: 10, marginTop: 6 },
-  grayBtn: { flex: 1, borderRadius: 12, backgroundColor: '#EFEFF2', alignItems: 'center', justifyContent: 'center', paddingVertical: 14 },
-  grayText: { fontSize: 22, color: '#4D4F58', fontWeight: '700' },
-  primaryBtn: { flex: 1, borderRadius: 12, backgroundColor: Colors.primary, alignItems: 'center', justifyContent: 'center', paddingVertical: 14 },
-  buyConfirmBtn: { flex: 1, borderRadius: 12, backgroundColor: '#FF5579', alignItems: 'center', justifyContent: 'center', paddingVertical: 14, minHeight: 50 },
-  buyConfirmBtnBusy: { opacity: 0.85 },
-  primaryText: { fontSize: 22, color: '#fff', fontWeight: '800' },
-  confirmLine: { fontSize: 22, color: Colors.text, marginBottom: 8, fontWeight: '600' },
-  confirmTotal: { fontSize: 26, color: '#E3448F', marginTop: 4, fontWeight: '800' },
-  confirmGrid: { marginTop: 6, marginBottom: 4 },
-  confirmRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 6,
-    gap: 12,
-  },
-  confirmLabel: { fontSize: 16, color: '#6E7387', fontWeight: '600', flexShrink: 0 },
-  confirmValue: { fontSize: 18, color: '#232737', fontWeight: '700', textAlign: 'right', flex: 1 },
-  orderPriceRed: { color: '#E53935', fontSize: 18, fontWeight: '900' },
-  totalAmountStrong: { color: '#1A1D3A', fontSize: 18, fontWeight: '900' },
-  stockBrief: { borderWidth: 1, borderColor: '#EAEBF2', borderRadius: 14, padding: 12, flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 12 },
-  logoMock: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#DCE0EE' },
-  stockBriefLogo: { width: 44, height: 44, borderRadius: 22 },
-  stockBriefTxt: { fontSize: 18, color: Colors.text, fontWeight: '700' },
-  principleCard: { marginTop: 12, borderWidth: 1, borderColor: '#E8E8EE', borderRadius: 14, padding: 12, flexDirection: 'row', gap: 10 },
-  guardCircle: {
-    width: 54,
-    height: 54,
-    borderRadius: 27,
-    borderWidth: 2,
-    borderColor: '#7D3BDD',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#F0E8FF',
-    overflow: 'hidden',
-  },
-  kimooniAvatar: { width: '100%', height: '100%', transform: [{ scale: 1.18 }] },
-  principleBody: { flex: 1 },
-  principleTitle: { fontSize: 16, fontWeight: '800', color: '#3A3F4E', marginBottom: 6 },
-  principleDesc: { fontSize: 14, color: '#585D70', lineHeight: 21 },
-  principleLead: { color: Colors.primary, fontSize: 16, fontWeight: '800', marginTop: 10, marginBottom: 10 },
-  violationList: {
-    color: '#6D7182',
-    fontSize: 13,
-    fontWeight: '600',
-    marginTop: 8,
-    marginBottom: 4,
-    lineHeight: 20,
-  },
-  strikeLine: {
-    marginTop: 10,
-    fontSize: 15,
-    fontWeight: '800',
-    color: '#4A148C',
-    lineHeight: 22,
-  },
-  principlesCta: {
-    marginTop: 12,
-    borderRadius: 12,
-    backgroundColor: Colors.primary,
-    paddingVertical: 14,
-    alignItems: 'center',
-    alignSelf: 'stretch',
-  },
-  principlesCtaTxt: { color: '#fff', fontSize: 15, fontWeight: '800' },
-  violationToggleBtn: {
-    alignSelf: 'flex-start',
-    marginTop: 6,
-    paddingVertical: 6,
-    paddingHorizontal: 4,
-  },
-  violationToggleTxt: {
-    fontSize: 14,
-    fontWeight: '800',
-    color: Colors.primary,
-    textDecorationLine: 'underline',
-  },
-  doneConfirmBtn: { marginTop: 16, alignSelf: 'stretch', flex: 0 },
-  ruleBtnSingleDanger: { backgroundColor: '#7D3BDD', borderRadius: 8, alignItems: 'center', paddingVertical: 10 },
-  ruleBtnDangerTxt: { color: '#fff', fontWeight: '800' },
 });
 
 function MetaCodeLabel({ label }: { label: string }) {

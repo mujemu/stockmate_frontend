@@ -1,12 +1,17 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../../config/colors';
+import type { SimulatedHoldingDto } from '../../types/stockmateApiV1';
 
 type HoldingsTab = 'general' | 'decimal';
 
 type Props = {
   accountLabel?: string;
+  /** 모의 매매 잔고 — 있으면 잔고 카드로 표시 */
+  holdings?: SimulatedHoldingDto[];
+  /** 현재 종목명과 일치하면 행을 살짝 강조 */
+  highlightStockName?: string;
   onPressAccount?: () => void;
   onPressCollectCta?: () => void;
   onPressOrders?: () => void;
@@ -15,12 +20,29 @@ type Props = {
 
 export function StockMyHoldingsSection({
   accountLabel = '위탁종합 6260-1612',
+  holdings,
+  highlightStockName,
   onPressAccount,
   onPressCollectCta,
   onPressOrders,
   onPressPending,
 }: Props) {
   const [tab, setTab] = useState<HoldingsTab>('general');
+
+  const sortedHoldings = useMemo(() => {
+    if (!holdings?.length) return [];
+    return [...holdings].sort((a, b) => b.eval_won - a.eval_won);
+  }, [holdings]);
+
+  const totals = useMemo(() => {
+    if (!sortedHoldings.length) return { eval: 0, pnl: 0, cost: 0 };
+    const evalW = sortedHoldings.reduce((s, h) => s + h.eval_won, 0);
+    const pnlW = sortedHoldings.reduce((s, h) => s + h.pnl_won, 0);
+    const costW = sortedHoldings.reduce((s, h) => s + h.total_cost_won, 0);
+    return { eval: evalW, pnl: pnlW, cost: costW };
+  }, [sortedHoldings]);
+
+  const hasHoldings = sortedHoldings.length > 0;
 
   return (
     <View style={styles.card}>
@@ -61,22 +83,69 @@ export function StockMyHoldingsSection({
         </Pressable>
       </View>
 
-      <View style={styles.holdCard}>
-        <View style={styles.holdInner}>
-          <View style={styles.alertIconWrap} accessibilityLabel="알림">
-            <Ionicons name="alert" size={18} color="#fff" />
+      {hasHoldings ? (
+        <View style={styles.holdingsBlock}>
+          <View style={styles.totalRow}>
+            <Text style={styles.totalLbl}>총 평가금액</Text>
+            <Text style={styles.totalVal}>{totals.eval.toLocaleString('ko-KR')}원</Text>
           </View>
-          <View style={styles.holdTextCol}>
-            <Text style={styles.holdMain}>이 종목을 가지고 있지 않아요.</Text>
-            <Pressable onPress={onPressCollectCta} accessibilityRole="button">
-              <View style={styles.ctaRow}>
-                <Text style={styles.cta}>이 종목을 모아볼까요</Text>
-                <Ionicons name="chevron-forward" size={16} color={Colors.primary} />
+          <Text
+            style={[
+              styles.totalPnl,
+              totals.pnl > 0 ? styles.pnlUp : totals.pnl < 0 ? styles.pnlDown : styles.pnlFlat,
+            ]}
+          >
+            {totals.pnl >= 0 ? '+' : ''}
+            {totals.pnl.toLocaleString('ko-KR')}
+            {totals.cost > 0 ? ` (${(totals.pnl / totals.cost * 100).toFixed(2)}%)` : ''}
+          </Text>
+          {sortedHoldings.map((h) => {
+            const hi = highlightStockName && h.stock_name === highlightStockName;
+            return (
+              <View key={`${h.stock_name}-${h.stock_code ?? ''}`} style={[styles.hRow, hi && styles.hRowHi]}>
+                <View style={styles.hLogo}>
+                  <Text style={styles.hLogoTxt}>{h.stock_name.slice(0, 1)}</Text>
+                </View>
+                <View style={styles.hMid}>
+                  <Text style={styles.hName} numberOfLines={1}>
+                    {h.stock_name}
+                  </Text>
+                  <Text style={styles.hQty}>{h.quantity.toLocaleString('ko-KR')}주</Text>
+                </View>
+                <View style={styles.hRight}>
+                  <Text style={styles.hEval}>{h.eval_won.toLocaleString('ko-KR')}원</Text>
+                  <Text
+                    style={[
+                      styles.hPnl,
+                      h.pnl_won > 0 ? styles.pnlUp : h.pnl_won < 0 ? styles.pnlDown : styles.pnlFlat,
+                    ]}
+                  >
+                    {h.pnl_won >= 0 ? '+' : ''}
+                    {h.pnl_won.toLocaleString('ko-KR')} ({h.pnl_pct.toFixed(2)}%)
+                  </Text>
+                </View>
               </View>
-            </Pressable>
+            );
+          })}
+        </View>
+      ) : (
+        <View style={styles.holdCard}>
+          <View style={styles.holdInner}>
+            <View style={styles.alertIconWrap} accessibilityLabel="알림">
+              <Ionicons name="alert" size={18} color="#fff" />
+            </View>
+            <View style={styles.holdTextCol}>
+              <Text style={styles.holdMain}>이 종목을 가지고 있지 않아요.</Text>
+              <Pressable onPress={onPressCollectCta} accessibilityRole="button">
+                <View style={styles.ctaRow}>
+                  <Text style={styles.cta}>이 종목을 모아볼까요</Text>
+                  <Ionicons name="chevron-forward" size={16} color={Colors.primary} />
+                </View>
+              </Pressable>
+            </View>
           </View>
         </View>
-      </View>
+      )}
 
       <View style={styles.orderBar}>
         <Pressable
@@ -217,4 +286,45 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     fontSize: 13,
   },
+
+  holdingsBlock: {
+    backgroundColor: '#fff',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#E8E8EE',
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    marginBottom: 12,
+  },
+  totalRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline' },
+  totalLbl: { fontSize: 13, color: '#5C6068', fontWeight: '700' },
+  totalVal: { fontSize: 18, fontWeight: '900', color: Colors.text },
+  totalPnl: { fontSize: 14, fontWeight: '800', marginTop: 4, textAlign: 'right' },
+  pnlUp: { color: '#E85A7A' },
+  pnlDown: { color: '#2563EB' },
+  pnlFlat: { color: '#6B7280' },
+  hRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#ECEEF3',
+    gap: 10,
+  },
+  hRowHi: { backgroundColor: '#FAF5FF' },
+  hLogo: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#EDE9FE',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  hLogoTxt: { fontSize: 16, fontWeight: '900', color: Colors.primary },
+  hMid: { flex: 1, minWidth: 0 },
+  hName: { fontSize: 14, fontWeight: '800', color: Colors.text },
+  hQty: { fontSize: 12, color: '#7C8193', fontWeight: '600', marginTop: 2 },
+  hRight: { alignItems: 'flex-end' },
+  hEval: { fontSize: 15, fontWeight: '900', color: Colors.text },
+  hPnl: { fontSize: 12, fontWeight: '800', marginTop: 2 },
 });

@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -10,6 +11,9 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Colors } from '../config/colors';
+import { useUserSession } from '../context/UserSessionContext';
+import { StockmateApiV1 } from '../services/stockmateApiV1';
+import type { SimulatedHoldingDto } from '../types/stockmateApiV1';
 
 const SECTORS = [
   { key: '금융', desc: '금리·배당·NIM 중심 가치주' },
@@ -28,6 +32,8 @@ const SERVICE_ICON_REPORT = require('../../assets/services/service_report_icon.p
 export function AssetsScreen({ navigation }: Props) {
   const [pin, setPin] = useState('');
   const [sectorModalVisible, setSectorModalVisible] = useState(false);
+  const { userId, ready: sessionReady } = useUserSession();
+  const [simHoldings, setSimHoldings] = useState<SimulatedHoldingDto[]>([]);
 
   const openSectorModal = () => setSectorModalVisible(true);
   const openReport = () => navigation.getParent()?.navigate('OwlReport' as never);
@@ -43,6 +49,27 @@ export function AssetsScreen({ navigation }: Props) {
   };
 
   const unlocked = pin.length >= 6;
+
+  useFocusEffect(
+    useCallback(() => {
+      if (!unlocked || !sessionReady || !userId) return;
+      void StockmateApiV1.holdings
+        .listSimulated(userId)
+        .then(setSimHoldings)
+        .catch(() => setSimHoldings([]));
+    }, [unlocked, sessionReady, userId]),
+  );
+
+  const simTotals = useMemo(() => {
+    if (!simHoldings.length) {
+      return { eval: 0, pnl: 0, cost: 0, rows: [] as SimulatedHoldingDto[] };
+    }
+    const sorted = [...simHoldings].sort((a, b) => b.eval_won - a.eval_won);
+    const evalW = sorted.reduce((s, h) => s + h.eval_won, 0);
+    const pnlW = sorted.reduce((s, h) => s + h.pnl_won, 0);
+    const costW = sorted.reduce((s, h) => s + h.total_cost_won, 0);
+    return { eval: evalW, pnl: pnlW, cost: costW, rows: sorted };
+  }, [simHoldings]);
 
   useEffect(() => {
     // PIN 인증 전에는 하단 탭을 숨겨 원본 인증 화면처럼 보이게 한다.
@@ -174,10 +201,60 @@ export function AssetsScreen({ navigation }: Props) {
             <Text key="tab-frac" style={styles.innerTabAsset}>소수점</Text>
             <Text key="tab-eval" style={styles.evalTxt}>평가금액↓</Text>
           </View>
-          <View style={styles.emptyWrap}>
-            <Text style={styles.dividendIcon}>▥</Text>
-            <Text style={styles.emptyText}>보유한 국내 주식이 없어요.</Text>
-          </View>
+          {simHoldings.length === 0 ? (
+            <View style={styles.emptyWrap}>
+              <Text style={styles.dividendIcon}>▥</Text>
+              <Text style={styles.emptyText}>보유한 국내 주식이 없어요.</Text>
+              <Text style={styles.emptyHint}>종목에서 모의 매수를 완료하면 여기에 표시돼요.</Text>
+            </View>
+          ) : (
+            <View style={styles.holdingsBox}>
+              <View style={styles.totalEvalRow}>
+                <Text style={styles.totalEvalLbl}>총 평가금액</Text>
+                <Text style={styles.totalEvalVal}>{simTotals.eval.toLocaleString('ko-KR')}원</Text>
+              </View>
+              <Text
+                style={[
+                  styles.totalEvalPnl,
+                  simTotals.pnl > 0 ? styles.pnlPos : simTotals.pnl < 0 ? styles.pnlNeg : styles.pnlZero,
+                ]}
+              >
+                {simTotals.pnl >= 0 ? '+' : ''}
+                {simTotals.pnl.toLocaleString('ko-KR')}
+                {simTotals.cost > 0
+                  ? ` (${(simTotals.pnl / simTotals.cost * 100).toFixed(2)}%)`
+                  : ''}
+              </Text>
+              {simTotals.rows.map((h) => (
+                <View key={`${h.stock_name}-${h.stock_code ?? ''}`} style={styles.holdingLine}>
+                  <View style={styles.hLogoSmall}>
+                    <Text style={styles.hLogoSmallTxt}>{h.stock_name.slice(0, 1)}</Text>
+                  </View>
+                  <View style={styles.holdingMid}>
+                    <Text style={styles.holdingName} numberOfLines={1}>
+                      {h.stock_name}
+                    </Text>
+                    <Text style={styles.holdingQty}>{h.quantity.toLocaleString('ko-KR')}주</Text>
+                  </View>
+                  <View style={styles.holdingRight}>
+                    <Text style={styles.holdingEval}>{h.eval_won.toLocaleString('ko-KR')}원</Text>
+                    <Text
+                      style={[
+                        styles.holdingPnl,
+                        h.pnl_won > 0 ? styles.pnlPos : h.pnl_won < 0 ? styles.pnlNeg : styles.pnlZero,
+                      ]}
+                    >
+                      {h.pnl_won >= 0 ? '+' : ''}
+                      {h.pnl_won.toLocaleString('ko-KR')} ({h.pnl_pct.toFixed(2)}%)
+                    </Text>
+                  </View>
+                </View>
+              ))}
+              <Pressable style={styles.moreGhost} accessibilityRole="button">
+                <Text style={styles.moreGhostTxt}>더보기</Text>
+              </Pressable>
+            </View>
+          )}
           <View style={styles.orderStateRow}>
             <Text key="os-trade" style={styles.orderState}>거래내역</Text>
             <Text key="os-order" style={styles.orderState}>주문내역</Text>
@@ -338,6 +415,59 @@ const styles = StyleSheet.create({
   evalTxt: { marginLeft: 'auto', color: '#666B7B', fontWeight: '700' },
   emptyWrap: { alignItems: 'center', justifyContent: 'center', minHeight: 150 },
   emptyText: { marginTop: 8, textAlign: 'center', fontSize: 14, color: '#666A77', fontWeight: '700' },
+  emptyHint: {
+    marginTop: 8,
+    textAlign: 'center',
+    fontSize: 12,
+    color: '#9398A8',
+    fontWeight: '600',
+    paddingHorizontal: 20,
+  },
+  holdingsBox: { paddingTop: 8, paddingBottom: 4 },
+  totalEvalRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'baseline',
+    paddingHorizontal: 4,
+  },
+  totalEvalLbl: { fontSize: 14, color: '#5C6068', fontWeight: '700' },
+  totalEvalVal: { fontSize: 20, fontWeight: '900', color: Colors.text },
+  totalEvalPnl: { fontSize: 15, fontWeight: '800', textAlign: 'right', marginTop: 4, marginBottom: 8 },
+  pnlPos: { color: '#E85A7A' },
+  pnlNeg: { color: '#2563EB' },
+  pnlZero: { color: '#6B7280' },
+  holdingLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#E7E8EF',
+    gap: 10,
+  },
+  hLogoSmall: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#EDE9FE',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  hLogoSmallTxt: { fontSize: 14, fontWeight: '900', color: Colors.primary },
+  holdingMid: { flex: 1, minWidth: 0 },
+  holdingName: { fontSize: 15, fontWeight: '800', color: Colors.text },
+  holdingQty: { fontSize: 12, color: '#7C8193', fontWeight: '600', marginTop: 2 },
+  holdingRight: { alignItems: 'flex-end' },
+  holdingEval: { fontSize: 16, fontWeight: '900', color: Colors.text },
+  holdingPnl: { fontSize: 12, fontWeight: '800', marginTop: 2 },
+  moreGhost: {
+    marginTop: 10,
+    backgroundColor: '#F3F3F6',
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    height: 44,
+  },
+  moreGhostTxt: { fontSize: 14, color: '#4D4F58', fontWeight: '600' },
   orderStateRow: { backgroundColor: '#F3F3F5', borderRadius: 10, flexDirection: 'row', justifyContent: 'space-around', paddingVertical: 12 },
   orderState: { color: '#9398A8', fontWeight: '700' },
   brandFooter: { alignItems: 'center', marginTop: 14, marginBottom: 14 },

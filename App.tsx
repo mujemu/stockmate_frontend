@@ -19,9 +19,13 @@ import { FlowStepScreen } from './src/screens/FlowStepScreen';
 import { AssetsScreen } from './src/screens/AssetsScreen';
 import { DebateRoomScreen } from './src/screens/DebateRoomScreen';
 import { OwlReportScreen } from './src/screens/OwlReportScreen';
+import { OwlReportViolationsByStockScreen } from './src/screens/OwlReportViolationsByStockScreen';
+import { OwlReportPrincipleDiaryScreen } from './src/screens/OwlReportPrincipleDiaryScreen';
+import { OwlReportHeroFollowScreen } from './src/screens/OwlReportHeroFollowScreen';
 import { MonthlyReportScreen } from './src/screens/MonthlyReportScreen';
 import { ExploreMainScreen } from './src/screens/ExploreMainScreen';
 import { StockTradeScreen } from './src/screens/StockTradeScreen';
+import { StockOrderQuantityScreen } from './src/screens/StockOrderQuantityScreen';
 import { SurveyScreen } from './src/screens/SurveyScreen';
 import { PrinciplesScreen } from './src/screens/PrinciplesScreen';
 import { StockPrincipleDetailScreen } from './src/screens/StockPrincipleDetailScreen';
@@ -85,6 +89,7 @@ function ExploreStackNavigator() {
     <ExploreStack.Navigator screenOptions={stackScreenOptions}>
       <ExploreStack.Screen name="ExploreMain" component={s(ExploreMainScreen)} />
       <ExploreStack.Screen name="StockTrade" component={s(StockTradeScreen)} />
+      <ExploreStack.Screen name="StockOrderQuantity" component={s(StockOrderQuantityScreen)} />
     </ExploreStack.Navigator>
   );
 }
@@ -180,6 +185,9 @@ export default function App() {
                   <RootStack.Screen name="PrototypeFlow" component={PrototypeFlowStackNavigator} />
                   <RootStack.Screen name="DebateRoom" component={s(DebateRoomScreen)} />
                   <RootStack.Screen name="OwlReport" component={s(OwlReportScreen)} />
+                  <RootStack.Screen name="OwlReportViolations" component={s(OwlReportViolationsByStockScreen)} />
+                  <RootStack.Screen name="OwlReportPrincipleDiary" component={s(OwlReportPrincipleDiaryScreen)} />
+                  <RootStack.Screen name="OwlReportHeroFollow" component={s(OwlReportHeroFollowScreen)} />
                   <RootStack.Screen name="MonthlyReport" component={s(MonthlyReportScreen)} />
                   <RootStack.Screen name="Survey" component={s(SurveyScreen)} />
                   <RootStack.Screen name="Principles" component={s(PrinciplesScreen)} />

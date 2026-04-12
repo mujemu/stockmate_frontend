@@ -14,11 +14,13 @@ import type {
   BehaviorLogCreateBody,
   BehaviorLogCreateResponse,
   BehaviorLogDto,
+  BehaviorLogSimulatedFillBody,
   ViolationsRemainingBody,
   ViolationsRemainingResponse,
   ForumTopicTitlePatchBody,
   RefreshOrderPrincipleSummaryResponse,
   ComplianceMonthDto,
+  PrincipleStatMonthDto,
   CreateUserBody,
   ForumPostCreateBody,
   ForumPostOutDto,
@@ -38,6 +40,8 @@ import type {
   SurveyQuestionDto,
   SurveyStatusDto,
   SurveySubmitBody,
+  SimulatedHoldingDto,
+  SimulatedTradeApplyBody,
   UserDto,
   PaginatedForumTopics,
 } from '../types/stockmateApiV1';
@@ -90,6 +94,18 @@ export const StockmateApiV1 = {
     async getResult(userId: string): Promise<unknown> {
       const { data } = await httpV1.get(`${V}/survey/${userId}/result`);
       return data;
+    },
+  },
+
+  holdings: {
+    async listSimulated(userId: string): Promise<SimulatedHoldingDto[]> {
+      const { data } = await httpV1.get<SimulatedHoldingDto[]>(
+        `${V}/holdings/user/${userId}/simulated`,
+      );
+      return data;
+    },
+    async applySimulatedTrade(userId: string, body: SimulatedTradeApplyBody): Promise<void> {
+      await httpV1.post(`${V}/holdings/user/${userId}/apply-trade`, body);
     },
   },
 
@@ -179,6 +195,16 @@ export const StockmateApiV1 = {
       );
       return data;
     },
+    async recordSimulatedFill(
+      logId: string,
+      body: BehaviorLogSimulatedFillBody,
+    ): Promise<BehaviorLogDto> {
+      const { data } = await httpV1.post<BehaviorLogDto>(
+        `${V}/behavior-logs/${logId}/simulated-fill`,
+        body,
+      );
+      return data;
+    },
   },
 
   analysis: {
@@ -213,8 +239,8 @@ export const StockmateApiV1 = {
       const { data } = await httpV1.get(`${V}/reports/monthly/${userId}/${year}/${month}/guide`);
       return data;
     },
-    async listByUser(userId: string): Promise<unknown> {
-      const { data } = await httpV1.get(`${V}/reports/user/${userId}`);
+    async listByUser(userId: string): Promise<MonthlyReportDto[]> {
+      const { data } = await httpV1.get<MonthlyReportDto[]>(`${V}/reports/user/${userId}`);
       return data;
     },
     async getCompliance(
@@ -230,8 +256,11 @@ export const StockmateApiV1 = {
     async getPrincipleStats(
       userId: string,
       params: { year: number; month: number }
-    ): Promise<unknown> {
-      const { data } = await httpV1.get(`${V}/reports/user/${userId}/principle-stats`, { params });
+    ): Promise<PrincipleStatMonthDto[]> {
+      const { data } = await httpV1.get<PrincipleStatMonthDto[]>(
+        `${V}/reports/user/${userId}/principle-stats`,
+        { params }
+      );
       return data;
     },
   },

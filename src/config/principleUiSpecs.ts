@@ -161,6 +161,46 @@ export function normalizePrincipleCategory(raw: string): string {
   return t;
 }
 
+/**
+ * 시드 문장의 N, n 플레이스홀더를 사용자 파라미터로 치환해 리포트·카드에 그대로 쓴다.
+ */
+export function formatPrincipleTemplateText(
+  template: string,
+  defaultRank: number,
+  bag: Record<string, number>,
+): string {
+  const spec = getParamSpec(defaultRank);
+  if (spec?.mode === 'toggle') {
+    const on = (bag.on ?? 1) === 1;
+    return on ? template : `${template} (현재 해제)`;
+  }
+  if (defaultRank === 4) {
+    const hours = bag.hours ?? 12;
+    const idx = Math.min(2, Math.max(0, bag.usIndex ?? 0));
+    const lab = US_INDEX_LABELS[idx];
+    return template.replace('미국 증시', `${lab}`).replace('N시간', `${hours}시간`);
+  }
+  if (defaultRank === 20) {
+    const c = bag.consecutive ?? 3;
+    const r = bag.restDays ?? 3;
+    return template.replace('n번', `${c}번`).replace('N일간', `${r}일간`);
+  }
+  const n = bag.n;
+  if (n == null) return template;
+  let t = template;
+  t = t.replace(/±N%/gi, `±${n}%`);
+  t = t.replace(/-N%/g, `-${n}%`);
+  t = t.replace(/N%/g, `${n}%`);
+  t = t.replace(/N분/g, `${n}분`);
+  t = t.replace(/N시간/g, `${n}시간`);
+  t = t.replace(/N일/g, `${n}일`);
+  t = t.replace(/N개/g, `${n}개`);
+  t = t.replace(/N배/g, `${n}배`);
+  t = t.replace(/N번/g, `${n}번`);
+  t = t.replace(/N시/g, `${n}시`);
+  return t;
+}
+
 export function sectionTitle(category: string): string {
   switch (category) {
     case '시간':

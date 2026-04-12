@@ -13,6 +13,7 @@ import {
 import { ScrollView } from 'react-native-gesture-handler';
 import { Colors } from '../config/colors';
 import { PrinciplesParamDragSlider } from './PrinciplesParamDragSlider';
+import { mergeServerParamsOverDisk, principlePrefsStorageKey } from '../config/principlePrefsStorage';
 import {
   CATEGORY_SECTION_ORDER,
   defaultParamsForRank,
@@ -26,8 +27,6 @@ import type { PrincipleDefaultDto } from '../types/stockmateApiV1';
 const POOL_SIZE = 23;
 /** 시간·비중·매도·매수·감정 각 1개 이상 + 전체 최소 개수 */
 const MIN_SELECTED = 5;
-
-const prefsKey = (userId: string) => `stockmate_principle_prefs_v1:${userId}`;
 
 const PURPLE = Colors.primary;
 
@@ -85,23 +84,6 @@ export function PrinciplesPriorityEditor({
     };
   }, [rankedIds, defaultById]);
 
-  const mergeStoredParams = useCallback(
-    (raw: unknown, principleList: PrincipleDefaultDto[]) => {
-      const next: Record<string, Record<string, number>> = {};
-      const stored =
-        raw && typeof raw === 'object' && 'params' in (raw as object)
-          ? (raw as { params?: Record<string, Record<string, number>> }).params
-          : null;
-      for (const d of principleList) {
-        const base = defaultParamsForRank(d.default_rank);
-        const fromDisk = stored?.[d.id];
-        next[d.id] = { ...base, ...(fromDisk && typeof fromDisk === 'object' ? fromDisk : {}) };
-      }
-      return next;
-    },
-    []
-  );
-
   const load = useCallback(async () => {
     setLoading(true);
     setErr(null);
@@ -109,7 +91,7 @@ export function PrinciplesPriorityEditor({
       const [d, s, rawPrefs] = await Promise.all([
         StockmateApiV1.principles.getDefaults(),
         StockmateApiV1.principles.getStatus(userId),
-        AsyncStorage.getItem(prefsKey(userId)),
+        AsyncStorage.getItem(principlePrefsStorageKey(userId)),
       ]);
       const sorted = d.slice().sort((a, b) => a.default_rank - b.default_rank);
       if (sorted.length !== POOL_SIZE) {
@@ -128,7 +110,7 @@ export function PrinciplesPriorityEditor({
           prefsParsed = null;
         }
       }
-      setParamsByPrinciple(mergeStoredParams(prefsParsed, sorted));
+      setParamsByPrinciple(mergeServerParamsOverDisk(sorted, prefsParsed, s.params));
 
       if (s.is_configured && s.rankings.length >= MIN_SELECTED) {
         const ordered = s.rankings.slice().sort((a, b) => a.rank - b.rank).map((r) => r.principle_id);
@@ -143,7 +125,7 @@ export function PrinciplesPriorityEditor({
     } finally {
       setLoading(false);
     }
-  }, [userId, mergeStoredParams]);
+  }, [userId]);
 
   useEffect(() => {
     load();
@@ -193,27 +175,43 @@ export function PrinciplesPriorityEditor({
   }, []);
 
   const save = useCallback(async () => {
-    if (!selectionState.canSave || saving) return;
+    if (saving) return;
+    if (!selectionState.canSave) {
+      setSaveMsg(
+        !selectionState.chaptersOk && selectionState.missingCats.length > 0
+          ? `조건을 맞춰 주세요: 시간·비중·매도·매수·감정 각 구역에서 최소 1개씩 골라 주세요. (미선택: ${selectionState.missingCats.join('·')})`
+          : `조건을 맞춰 주세요: 원칙을 ${MIN_SELECTED}~${POOL_SIZE}개 선택하세요. (현재 ${rankedIds.length}개)`,
+      );
+      return;
+    }
     setSaving(true);
     setSaveMsg(null);
     try {
       const sortedIds = sortIdsByDefaultRank(rankedIds, defaultById);
       const rankings = sortedIds.map((principle_id, i) => ({ principle_id, rank: i + 1 }));
-      await StockmateApiV1.principles.setup(userId, { rankings });
+      await StockmateApiV1.principles.setup(userId, { rankings, params: paramsByPrinciple });
       const prefsPayload = JSON.stringify({ version: 1 as const, params: paramsByPrinciple });
-      await AsyncStorage.setItem(prefsKey(userId), prefsPayload);
-      if (onSaved) {
-        onSaved();
-        return;
-      }
+      await AsyncStorage.setItem(principlePrefsStorageKey(userId), prefsPayload);
       await load();
-      setSaveMsg('서버에 저장했습니다.');
+      setSaveMsg('저장했습니다.');
+      onSaved?.();
     } catch (e) {
       setSaveMsg(e instanceof Error ? e.message : String(e));
     } finally {
       setSaving(false);
     }
-  }, [rankedIds, saving, userId, load, onSaved, paramsByPrinciple, selectionState.canSave, defaultById]);
+  }, [
+    rankedIds,
+    saving,
+    userId,
+    load,
+    onSaved,
+    paramsByPrinciple,
+    selectionState.canSave,
+    selectionState.chaptersOk,
+    selectionState.missingCats,
+    defaultById,
+  ]);
 
   const renderDetailCard = (pid: string) => {
     const d = defaultById[pid];
@@ -389,7 +387,11 @@ export function PrinciplesPriorityEditor({
         <Text
           style={[
             styles.saveBanner,
-            saveMsg.includes('저장') ? styles.saveBannerOk : styles.saveBannerErr,
+            saveMsg === '저장했습니다.'
+              ? styles.saveBannerOk
+              : saveMsg.startsWith('조건을')
+                ? styles.saveBannerHint
+                : styles.saveBannerErr,
           ]}
         >
           {saveMsg}
@@ -407,7 +409,7 @@ export function PrinciplesPriorityEditor({
         <Pressable
           style={[styles.saveBtn, (!selectionState.canSave || saving) && styles.saveBtnOff]}
           onPress={save}
-          disabled={!selectionState.canSave || saving}
+          disabled={saving}
         >
           {saving ? (
             <ActivityIndicator color="#fff" />
@@ -577,6 +579,7 @@ const styles = StyleSheet.create({
   },
   saveBanner: { textAlign: 'center', fontSize: 12, fontWeight: '700', paddingVertical: 8, paddingHorizontal: 12 },
   saveBannerOk: { color: '#14532D', backgroundColor: '#DCFCE7' },
+  saveBannerHint: { color: '#5C4A00', backgroundColor: '#FFF9E6' },
   saveBannerErr: { color: '#991B1B', backgroundColor: '#FEE2E2' },
   footer: {
     paddingHorizontal: 20,
