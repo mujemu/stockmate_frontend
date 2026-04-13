@@ -16,6 +16,7 @@ import { Colors } from '../config/colors';
 import {
   buildFormattedViolationLinesForOrderSheet,
   buildKimooniOrderViolationPreview,
+  cleanShortPrincipleLabelForUi,
 } from '../config/orderPrincipleViolationCopy';
 import type { OrderPrincipleViolationDetailDto, PrinciplesStatusDto } from '../types/stockmateApiV1';
 import { getStockOrderModalCopy, resolveStockOrderPriceWon } from '../config/stockTradeDetail';
@@ -90,6 +91,7 @@ export function StockOrderQuantityScreen({ navigation, route }: Props) {
   const [interventionMessage, setInterventionMessage] = useState<string | null>(null);
   const [violatedPrinciples, setViolatedPrinciples] = useState<string[]>([]);
   const [violationDetails, setViolationDetails] = useState<OrderPrincipleViolationDetailDto[]>([]);
+  const [forceCheckRoomRequired, setForceCheckRoomRequired] = useState(false);
   const [principlesStatus, setPrinciplesStatus] = useState<PrinciplesStatusDto | null>(null);
   const [postTradeLedger, setPostTradeLedger] = useState<ViolationLedger | null>(null);
   const [postTradeViolationsExpanded, setPostTradeViolationsExpanded] = useState(false);
@@ -224,6 +226,31 @@ export function StockOrderQuantityScreen({ navigation, route }: Props) {
     ],
   );
 
+  /** 수량 시트 위반 블록: 짧은 라벨만(괄호·목록문자 제거) */
+  const orderSheetPrincipleSummaries = useMemo(() => {
+    if (!hasDecisionViolation) return [] as string[];
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const d of violationDetails) {
+      const c = cleanShortPrincipleLabelForUi(d.short_label ?? '');
+      if (!c || seen.has(c)) continue;
+      seen.add(c);
+      out.push(c);
+    }
+    if (out.length === 0) {
+      for (const k of orderViolationPreview.keywords) {
+        const c = cleanShortPrincipleLabelForUi(String(k));
+        if (!c || seen.has(c)) continue;
+        seen.add(c);
+        out.push(c);
+      }
+    }
+    return out;
+  }, [hasDecisionViolation, violationDetails, orderViolationPreview.keywords]);
+
+  const useViolationSheetLayout =
+    hasDecisionViolation && !submittingOrder && orderSheetPrincipleSummaries.length > 0;
+
   const topViolationLabel =
     orderViolationPreview.primaryLabel ??
     violatedPrinciples.map((s) => String(s).trim()).find(Boolean) ??
@@ -264,9 +291,7 @@ export function StockOrderQuantityScreen({ navigation, route }: Props) {
   const useKimooniBulletMode =
     hasDecisionViolation && !submittingOrder && orderViolationPreview.bullets.length > 0;
 
-  const kimooniCoachTitle = hasDecisionViolation
-    ? '키문이: 원칙 위반 감지'
-    : '키문이: 원칙만 한 번 더 짚어 볼게요';
+  const kimooniCoachTitle = '키문이의 원칙 코치';
 
   const kimooniLead = hasDecisionViolation
     ? '적어 두신 기준을 확인하신 뒤, 계속할지 잠시 멈출지 결정해 보세요.'
@@ -336,11 +361,18 @@ export function StockOrderQuantityScreen({ navigation, route }: Props) {
         setViolationDetails(
           Array.isArray(bl.violation_details) ? bl.violation_details.filter(Boolean) : [],
         );
+        setForceCheckRoomRequired(
+          bl.force_check_required === true ||
+            bl.force_check_room === true ||
+            bl.check_room_required === true ||
+            bl.require_check_room === true,
+        );
         if (bl.intervention_message && bl.log?.id) {
           StockmateApiV1.behaviorLogs.patchState(bl.log.id, { state: 'delivered' }).catch(() => {});
         }
       } catch {
         /* 오프라인 */
+        if (!cancelled) setForceCheckRoomRequired(false);
       } finally {
         if (!cancelled) setSubmittingOrder(false);
       }
@@ -383,6 +415,10 @@ export function StockOrderQuantityScreen({ navigation, route }: Props) {
       if (qty < 1) return;
     }
     const priceWon = parseInt(limitPrice || '0', 10) || 0;
+    if (forceCheckRoomRequired && hasDecisionViolation) {
+      onGoDebateRoomBeforeOrder();
+      return;
+    }
     if (userReady && userId) {
       try {
         await StockmateApiV1.holdings.applySimulatedTrade(userId, {
@@ -434,6 +470,7 @@ export function StockOrderQuantityScreen({ navigation, route }: Props) {
           interventionMessage: interventionMessage ?? undefined,
           topViolation: topViolationLabel ?? undefined,
           behaviorLogId: activeBehaviorLogId ?? undefined,
+          forceCheckRoomRequired,
           violationDetails: violationDetails.length > 0 ? violationDetails : undefined,
         },
       });
@@ -459,13 +496,24 @@ export function StockOrderQuantityScreen({ navigation, route }: Props) {
           submitDisabled={sellSubmitBlocked}
           submitDisabledReason={sellSubmitHint}
           kimooniTitle={kimooniCoachTitle}
-          kimooniScoreLine={kimooniScoreLineWithOpener}
-          kimooniBullets={useKimooniBulletMode ? orderViolationPreview.bullets : undefined}
-          kimooniMoreInForumCount={
-            useKimooniBulletMode ? orderViolationPreview.moreInForumCount : undefined
+          kimooniScoreLine={useViolationSheetLayout ? undefined : kimooniScoreLineWithOpener}
+          kimooniBullets={
+            useViolationSheetLayout ? undefined : useKimooniBulletMode
+              ? orderViolationPreview.bullets
+              : undefined
           }
-          kimooniLead={useKimooniBulletMode ? kimooniLead : undefined}
-          kimooniBody={useKimooniBulletMode ? undefined : kimooniCoachBody}
+          kimooniMoreInForumCount={
+            useViolationSheetLayout
+              ? undefined
+              : useKimooniBulletMode
+                ? orderViolationPreview.moreInForumCount
+                : undefined
+          }
+          kimooniLead={useViolationSheetLayout ? undefined : useKimooniBulletMode ? kimooniLead : undefined}
+          kimooniBody={useViolationSheetLayout ? undefined : useKimooniBulletMode ? undefined : kimooniCoachBody}
+          kimooniPrincipleSummaries={
+            useViolationSheetLayout ? orderSheetPrincipleSummaries : undefined
+          }
           onOpenDebate={onGoDebateRoomBeforeOrder}
         />
       </SafeAreaView>
@@ -486,6 +534,9 @@ export function StockOrderQuantityScreen({ navigation, route }: Props) {
               showsVerticalScrollIndicator={false}
               bounces={false}
             >
+              <Text style={styles.doneHeadline} accessibilityRole="header">
+                {orderType === 'buy' ? '매수 주문이 완료됐습니다' : '매도 주문이 완료됐습니다'}
+              </Text>
               <View style={styles.stockBrief}>
                 {stockLogo != null ? (
                   <Image source={stockLogo} style={styles.stockBriefLogo} resizeMode="contain" />
@@ -605,6 +656,15 @@ const styles = StyleSheet.create({
     marginTop: 30,
     maxHeight: '82%',
   },
+  doneHeadline: {
+    fontSize: 24,
+    fontWeight: '900',
+    color: '#1A1D2B',
+    letterSpacing: -0.6,
+    lineHeight: 32,
+    marginBottom: 14,
+    marginTop: 2,
+  },
   primaryBtn: {
     borderRadius: 12,
     backgroundColor: Colors.primary,
@@ -633,7 +693,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
-    marginTop: 4,
+    marginTop: 0,
     marginBottom: 12,
   },
   logoMock: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#DCE0EE' },

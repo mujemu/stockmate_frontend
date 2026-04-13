@@ -24,7 +24,9 @@ import { StockmateApiV1 } from '../services/stockmateApiV1';
 import type {
   BehaviorLogDto,
   ComplianceMonthDto,
+  MonthlyReportDto,
   PrincipleDefaultDto,
+  PrincipleStatMonthDto,
   PrinciplesStatusDto,
 } from '../types/stockmateApiV1';
 
@@ -82,6 +84,15 @@ function complianceRangeParams(ref: Date): { start: string; end: string } {
   return { start: formatYm(first.year, first.month), end: formatYm(last.year, last.month) };
 }
 
+function getYearMonth(ref: Date): { year: number; month: number } {
+  return { year: ref.getFullYear(), month: ref.getMonth() + 1 };
+}
+
+function getPrevYearMonth(ref: Date): { year: number; month: number } {
+  const d = new Date(ref.getFullYear(), ref.getMonth() - 1, 1);
+  return { year: d.getFullYear(), month: d.getMonth() + 1 };
+}
+
 interface Props {
   navigation: {
     goBack: () => void;
@@ -103,16 +114,26 @@ export function OwlReportScreen({ navigation }: Props) {
   const [defaults, setDefaults] = useState<PrincipleDefaultDto[]>([]);
   const [paramsByPid, setParamsByPid] = useState<Record<string, Record<string, number>>>({});
   const [complianceSeries, setComplianceSeries] = useState<ComplianceMonthDto[]>([]);
+  const [monthlyReports, setMonthlyReports] = useState<MonthlyReportDto[]>([]);
+  const [principleStatsCurrent, setPrincipleStatsCurrent] = useState<PrincipleStatMonthDto[]>([]);
+  const [principleStatsPrev, setPrincipleStatsPrev] = useState<PrincipleStatMonthDto[]>([]);
 
   const load = useCallback(async () => {
     if (!userId) return;
     setError(null);
     const { start, end } = complianceRangeParams(now);
-    const [p, defs, l, comp] = await Promise.all([
+    const currentYm = getYearMonth(now);
+    const prevYm = getPrevYearMonth(now);
+    const [p, defs, l, comp, reports, statsCurrent, statsPrev] = await Promise.all([
       StockmateApiV1.principles.getStatus(userId),
       StockmateApiV1.principles.getDefaults(),
       StockmateApiV1.behaviorLogs.listByUser(userId, 180),
       StockmateApiV1.reports.getCompliance(userId, { start, end }).catch(() => [] as ComplianceMonthDto[]),
+      StockmateApiV1.reports.listByUser(userId).catch(() => [] as MonthlyReportDto[]),
+      StockmateApiV1.reports
+        .getPrincipleStats(userId, currentYm)
+        .catch(() => [] as PrincipleStatMonthDto[]),
+      StockmateApiV1.reports.getPrincipleStats(userId, prevYm).catch(() => [] as PrincipleStatMonthDto[]),
     ]);
     const sortedDefs = defs.slice().sort((a, b) => a.default_rank - b.default_rank);
     const pmap = await loadPrincipleParamsMap(userId, sortedDefs, p.params);
@@ -121,6 +142,9 @@ export function OwlReportScreen({ navigation }: Props) {
     setPrinciples(p);
     setLogs(l);
     setComplianceSeries(Array.isArray(comp) ? comp : []);
+    setMonthlyReports(Array.isArray(reports) ? reports : []);
+    setPrincipleStatsCurrent(Array.isArray(statsCurrent) ? statsCurrent : []);
+    setPrincipleStatsPrev(Array.isArray(statsPrev) ? statsPrev : []);
   }, [userId, now]);
 
   useEffect(() => {
@@ -245,6 +269,114 @@ export function OwlReportScreen({ navigation }: Props) {
       line: displayPrincipleText(r.principle_id, r.text),
     }));
   }, [principles?.is_configured, principlesExpanded, rankingSource, displayPrincipleText]);
+
+  const principleChangeJournal = useMemo(() => {
+    const rows: { id: string; date: Date; title: string; detail: string; source: string }[] = [];
+    if (principles?.configured_at) {
+      rows.push({
+        id: `configured-${principles.configured_at}`,
+        date: new Date(principles.configured_at),
+        title: '원칙 최초 구성',
+        detail: `우선순위 ${principles.rankings.length}개 기준으로 설정이 완료되었어요.`,
+        source: '설정 시각 기반',
+      });
+    }
+    if (principles?.updated_at) {
+      rows.push({
+        id: `updated-${principles.updated_at}`,
+        date: new Date(principles.updated_at),
+        title: '원칙 최근 수정',
+        detail: '세부 전/후 문구는 전용 버전 이력 API 없이 현재 설정 시각으로만 추정해요.',
+        source: '업데이트 시각 기반(추정)',
+      });
+    }
+    for (const r of monthlyReports.slice(0, 6)) {
+      const hint = (r.improvements ?? []).filter(Boolean).slice(0, 1)[0];
+      rows.push({
+        id: `report-${r.id}`,
+        date: new Date(r.created_at),
+        title: `${r.year}년 ${r.month}월 원칙 점검`,
+        detail:
+          hint ??
+          `행동 ${r.behavior_count}회 · 위반 ${r.violation_count}회 · 원칙 점수 ${r.principle_score ?? '—'}`,
+        source: '월간 리포트 생성 시각 기반',
+      });
+    }
+    return rows
+      .filter((r) => !Number.isNaN(r.date.getTime()))
+      .sort((a, b) => b.date.getTime() - a.date.getTime())
+      .slice(0, 5)
+      .map((r) => ({
+        ...r,
+        dateLabel: r.date.toLocaleDateString('ko-KR', {
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric',
+        }),
+      }));
+  }, [principles?.configured_at, principles?.updated_at, principles?.rankings.length, monthlyReports]);
+
+  const principleComplianceRows = useMemo(() => {
+    const fallback = rankingSource.slice(0, 5).map((r) => ({
+      principle_id: r.principle_id,
+      rank: r.rank,
+      text: displayPrincipleText(r.principle_id, r.text),
+      complianceRate: null as number | null,
+      violationCount: null as number | null,
+      basisLabel: '원칙별 통계 데이터 없음',
+    }));
+    if (principleStatsCurrent.length === 0) return fallback;
+    return principleStatsCurrent
+      .map((s) => {
+        const checks = (s.practice_ok_count ?? 0) + s.violation_count;
+        const hasChecks = checks > 0;
+        return {
+          principle_id: s.principle_id,
+          rank: s.rank ?? 999,
+          text: displayPrincipleText(s.principle_id, s.text),
+          complianceRate: hasChecks ? Math.round(((s.practice_ok_count ?? 0) / checks) * 100) : null,
+          violationCount: s.violation_count,
+          basisLabel:
+            s.practice_ok_count != null
+              ? `점검 ${checks}건 기준`
+              : '위반 건수 기준(준수 건수 미제공)',
+        };
+      })
+      .sort((a, b) => a.rank - b.rank)
+      .slice(0, 6);
+  }, [principleStatsCurrent, rankingSource, displayPrincipleText]);
+
+  const upwardPrincipleComparisons = useMemo(() => {
+    if (principleStatsCurrent.length === 0 || principleStatsPrev.length === 0) return [];
+    const prevById = new Map(principleStatsPrev.map((p) => [p.principle_id, p]));
+    return principleStatsCurrent
+      .map((cur) => {
+        const prev = prevById.get(cur.principle_id);
+        if (!prev) return null;
+        const curChecks = (cur.practice_ok_count ?? 0) + cur.violation_count;
+        const prevChecks = (prev.practice_ok_count ?? 0) + prev.violation_count;
+        if (cur.practice_ok_count != null && prev.practice_ok_count != null && curChecks > 0 && prevChecks > 0) {
+          const curRate = (cur.practice_ok_count / curChecks) * 100;
+          const prevRate = (prev.practice_ok_count / prevChecks) * 100;
+          const diff = Math.round(curRate - prevRate);
+          if (diff <= 0) return null;
+          return {
+            id: cur.principle_id,
+            text: displayPrincipleText(cur.principle_id, cur.text),
+            metric: `준수율 +${diff}%p`,
+          };
+        }
+        const diffViolation = prev.violation_count - cur.violation_count;
+        if (diffViolation <= 0) return null;
+        return {
+          id: cur.principle_id,
+          text: displayPrincipleText(cur.principle_id, cur.text),
+          metric: `위반 ${diffViolation}건 감소`,
+        };
+      })
+      .filter((v): v is { id: string; text: string; metric: string } => v != null)
+      .slice(0, 2);
+  }, [principleStatsCurrent, principleStatsPrev, displayPrincipleText]);
 
   if (loading) {
     return (
@@ -402,6 +534,68 @@ export function OwlReportScreen({ navigation }: Props) {
         <View style={styles.insightBox}>
           <Text style={styles.insightTitle}>👀 원칙 수정이 유효했을까?</Text>
           <Text style={styles.insightBody}>지난 원칙 수정 후 2개월간 준수율 연속 상승 중</Text>
+        </View>
+
+        <Text style={[styles.sectionTitle, styles.sectionTitleBlock]}>원칙 변경 일지</Text>
+        <Text style={styles.sectionSub}>
+          전용 변경 이력 API가 없어 설정/리포트 시각 기반으로 정리했어요.
+        </Text>
+        <View style={styles.card}>
+          {principleChangeJournal.length === 0 ? (
+            <View style={styles.journalRow}>
+              <Text style={styles.journalTitle}>아직 기록이 충분하지 않아요.</Text>
+              <Text style={styles.journalMeta}>원칙 저장 또는 월간 리포트가 쌓이면 자동으로 표시돼요.</Text>
+            </View>
+          ) : (
+            principleChangeJournal.map((row, idx) => (
+              <View key={row.id} style={[styles.journalRow, idx > 0 && styles.principleLineBorder]}>
+                <Text style={styles.journalDate}>{row.dateLabel}</Text>
+                <Text style={styles.journalTitle}>{row.title}</Text>
+                <Text style={styles.journalBody} numberOfLines={2}>
+                  {row.detail}
+                </Text>
+                <Text style={styles.journalMeta}>{row.source}</Text>
+              </View>
+            ))
+          )}
+        </View>
+
+        <Text style={[styles.sectionTitle, styles.sectionTitleBlock]}>원칙별 준수율</Text>
+        <Text style={styles.sectionSub}>당월 원칙 통계를 우선 사용하고, 일부 항목은 위반 건수 중심으로 보여줘요.</Text>
+        <View style={styles.card}>
+          {principleComplianceRows.map((row, idx) => (
+            <View key={row.principle_id} style={[styles.complianceRow, idx > 0 && styles.principleLineBorder]}>
+              <Text style={styles.complianceText} numberOfLines={2}>
+                {row.text}
+              </Text>
+              <View style={styles.complianceRight}>
+                <Text style={styles.complianceRate}>
+                  {row.complianceRate == null ? `위반 ${row.violationCount ?? 0}건` : `${row.complianceRate}%`}
+                </Text>
+                <Text style={styles.complianceBasis}>{row.basisLabel}</Text>
+              </View>
+            </View>
+          ))}
+        </View>
+
+        <Text style={[styles.sectionTitle, styles.sectionTitleBlock]}>우상향 원칙 비교</Text>
+        <Text style={styles.sectionSub}>전월 대비 개선된 원칙만 간단히 노출해요.</Text>
+        <View style={styles.card}>
+          {upwardPrincipleComparisons.length === 0 ? (
+            <View style={styles.journalRow}>
+              <Text style={styles.journalTitle}>이번 달 비교 데이터가 아직 부족해요.</Text>
+              <Text style={styles.journalMeta}>연속 월 통계가 쌓이면 개선 항목을 자동 표시해요.</Text>
+            </View>
+          ) : (
+            upwardPrincipleComparisons.map((row, idx) => (
+              <View key={row.id} style={[styles.comparisonRow, idx > 0 && styles.principleLineBorder]}>
+                <Text style={styles.comparisonText} numberOfLines={2}>
+                  {row.text}
+                </Text>
+                <Text style={styles.comparisonMetric}>{row.metric}</Text>
+              </View>
+            ))
+          )}
         </View>
 
         <Text style={[styles.sectionTitle, styles.sectionTitleBlock]}>영웅 따라하기</Text>
@@ -659,5 +853,37 @@ const styles = StyleSheet.create({
   muted: { fontSize: 13, color: C.sub, fontWeight: '600', lineHeight: 20 },
   linkBtn: { marginTop: 12, alignSelf: 'flex-start' },
   linkBtnTxt: { fontSize: 14, fontWeight: '900', color: P },
+
+  journalRow: {
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    gap: 4,
+  },
+  journalDate: { fontSize: 11, fontWeight: '700', color: '#9CA3AF' },
+  journalTitle: { fontSize: 14, fontWeight: '800', color: C.text },
+  journalBody: { fontSize: 13, fontWeight: '600', color: C.sub, lineHeight: 19 },
+  journalMeta: { fontSize: 11, fontWeight: '700', color: P },
+
+  complianceRow: {
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  complianceText: { flex: 1, fontSize: 13, fontWeight: '700', color: C.text, lineHeight: 19 },
+  complianceRight: { alignItems: 'flex-end', minWidth: 110 },
+  complianceRate: { fontSize: 15, fontWeight: '900', color: PINK },
+  complianceBasis: { marginTop: 2, fontSize: 10, fontWeight: '700', color: '#9CA3AF' },
+
+  comparisonRow: {
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  comparisonText: { flex: 1, fontSize: 13, fontWeight: '700', color: C.text, lineHeight: 19 },
+  comparisonMetric: { fontSize: 12, fontWeight: '900', color: C.green },
 
 });

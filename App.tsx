@@ -8,11 +8,7 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'react-native';
 import { Ionicons, Feather, MaterialCommunityIcons } from '@expo/vector-icons';
-import { SelectStocksScreen } from './src/screens/SelectStocksScreen';
-import { HomeScreen } from './src/screens/HomeScreen';
-import { ChatScreen } from './src/screens/ChatScreen';
 import { MenuScreen } from './src/screens/MenuScreen';
-import { PlaceholderTabScreen } from './src/screens/PlaceholderTabScreen';
 import { WatchlistScreen } from './src/screens/WatchlistScreen';
 import { BenefitsScreen } from './src/screens/BenefitsScreen';
 import { FlowStepScreen } from './src/screens/FlowStepScreen';
@@ -37,7 +33,6 @@ import { SurveyLaunchGate } from './src/components/SurveyLaunchGate';
 import { GlobalNewsModal } from './src/components/GlobalNewsModal';
 
 const RootStack = createStackNavigator();
-const StockMateStack = createStackNavigator();
 const FlowStack = createStackNavigator();
 const ExploreStack = createStackNavigator();
 const Tab = createBottomTabNavigator();
@@ -49,16 +44,6 @@ const stackScreenOptions = {
   headerShown: false,
   cardStyle: { backgroundColor: Colors.background },
 };
-
-function StockMateStackNavigator() {
-  return (
-    <StockMateStack.Navigator screenOptions={stackScreenOptions}>
-      <StockMateStack.Screen name="SelectStocks" component={s(SelectStocksScreen)} />
-      <StockMateStack.Screen name="Home" component={s(HomeScreen)} />
-      <StockMateStack.Screen name="Chat" component={s(ChatScreen)} />
-    </StockMateStack.Navigator>
-  );
-}
 
 function PrototypeFlowStackNavigator() {
   return (
@@ -181,7 +166,6 @@ export default function App() {
                 <StatusBar barStyle="dark-content" />
                 <RootStack.Navigator screenOptions={stackScreenOptions}>
                   <RootStack.Screen name="MainTabs" component={MainTabs} />
-                  <RootStack.Screen name="StockMate" component={StockMateStackNavigator} />
                   <RootStack.Screen name="PrototypeFlow" component={PrototypeFlowStackNavigator} />
                   <RootStack.Screen name="DebateRoom" component={s(DebateRoomScreen)} />
                   <RootStack.Screen name="OwlReport" component={s(OwlReportScreen)} />

@@ -4,10 +4,7 @@
  */
 
 import { defaultParamsForRank, formatPrincipleTemplateText } from './principleUiSpecs';
-import type {
-  OrderPrincipleViolationDetailDto,
-  PrinciplesStatusDto,
-} from '../types/stockmateApiV1';
+import type { OrderPrincipleViolationDetailDto, PrinciplesStatusDto } from '../types/stockmateApiV1';
 
 export type OrderSide = 'buy' | 'sell';
 
@@ -16,6 +13,17 @@ function normLabel(s: string): string {
     .replace(/\r?\n/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+/** 시트·점검방 카드: 목록문자·괄호·앞번호·단일 알파벳 접두 등 제거 후 한 줄 */
+export function cleanShortPrincipleLabelForUi(raw: string): string {
+  let s = normLabel(raw);
+  s = s.replace(/^\[[a-z]\]\s*/i, '').trim();
+  s = s.replace(/^[「『]/, '').replace(/[」』]$/g, '').trim();
+  s = s.replace(/^\(\s*\d+\s*\)\s*/, '').replace(/^\[\d+\]\s*/, '').trim();
+  s = s.replace(/^\d+\s*[\).、．]\s*/, '').trim();
+  s = s.replace(/^[a-z]\s+/i, '').trim();
+  return normLabel(s);
 }
 
 /**
@@ -259,7 +267,7 @@ export function buildOrderPrincipleRecapItemsForDebate(
     | {
         orderType?: 'buy' | 'sell';
         violatedPrinciples?: string[];
-        violationDetails?: { short_label: string; reason: string }[];
+        violationDetails?: { short_label: string; reason: string; default_rank?: number }[];
       }
     | null
     | undefined,

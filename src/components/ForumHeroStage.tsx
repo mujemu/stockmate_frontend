@@ -13,9 +13,9 @@ import { useVideoPlayer, VideoView } from 'expo-video';
 const VIDEOS = {
   idle:   require('../../assets/services/사용자들이 아무 채팅 안칠때 기다리는 영상.mp4'),
   typing: require('../../assets/services/사용자들이 채팅칠때 기다리는 영상1.mp4'),
-  /** 에셋 파일명은 레거시(부엉이·문어·거북이)이며, 앱 내 역할은 키엉이·키문이·키북이에 대응한다. */
-  eagle:  require('../../assets/services/부엉이 말하는 영상.mp4'),
-  owl:    require('../../assets/services/문어 말하는 영상.mp4'),
+  /** owl=기자(부엉이), octopus=원칙 코치(문어), turtle=회계사(거북이) */
+  owl:     require('../../assets/services/부엉이 말하는 영상.mp4'),
+  octopus: require('../../assets/services/문어 말하는 영상.mp4'),
   turtle: require('../../assets/services/거북이 말하는 영상.mp4'),
 };
 
@@ -23,7 +23,7 @@ type VideoKey = keyof typeof VIDEOS;
 
 // ── 타입 ─────────────────────────────────────────────────────────────────────
 export type ForumHeroAgent = {
-  id: 'eagle' | 'owl' | 'turtle';
+  id: 'owl' | 'turtle' | 'octopus';
   name: string;
   role: string;
   labelAnchor: { left: DimensionValue; top: DimensionValue };
@@ -45,7 +45,7 @@ function resolveKey(
   speakerId: ForumHeroAgent['id'] | null,
   isUserTyping: boolean,
 ): VideoKey {
-  if (speakerId === 'eagle' || speakerId === 'owl' || speakerId === 'turtle') return speakerId;
+  if (speakerId === 'owl' || speakerId === 'octopus' || speakerId === 'turtle') return speakerId;
   if (isUserTyping) return 'typing';
   return 'idle';
 }
@@ -135,16 +135,16 @@ export const ForumHeroStage = React.memo(function ForumHeroStage({
   // 5개 플레이어 모두 미리 로드 & 루프 재생
   const pIdle   = useVideoPlayer(VIDEOS.idle,   (p) => { p.loop = true; p.muted = true; p.play(); });
   const pTyping = useVideoPlayer(VIDEOS.typing,  (p) => { p.loop = true; p.muted = true; p.play(); });
-  const pEagle  = useVideoPlayer(VIDEOS.eagle,   (p) => { p.loop = true; p.muted = true; p.play(); });
   const pOwl    = useVideoPlayer(VIDEOS.owl,     (p) => { p.loop = true; p.muted = true; p.play(); });
+  const pOctopus= useVideoPlayer(VIDEOS.octopus, (p) => { p.loop = true; p.muted = true; p.play(); });
   const pTurtle = useVideoPlayer(VIDEOS.turtle,  (p) => { p.loop = true; p.muted = true; p.play(); });
 
   // 비활성 영상을 0.001로 유지 → native renderer가 texture를 살려둠 (0이면 suspend됨)
   const HIDDEN = 0.001;
   const opIdle   = useRef(new Animated.Value(1)).current;
   const opTyping = useRef(new Animated.Value(HIDDEN)).current;
-  const opEagle  = useRef(new Animated.Value(HIDDEN)).current;
   const opOwl    = useRef(new Animated.Value(HIDDEN)).current;
+  const opOctopus= useRef(new Animated.Value(HIDDEN)).current;
   const opTurtle = useRef(new Animated.Value(HIDDEN)).current;
 
   // 현재 영상이 렌더 스택 최상위가 되도록 zIndex 추적
@@ -159,9 +159,9 @@ export const ForumHeroStage = React.memo(function ForumHeroStage({
     prevKeyRef.current = currentKey;
 
     const allOps: Record<VideoKey, Animated.Value> = {
-      idle: opIdle, typing: opTyping, eagle: opEagle, owl: opOwl, turtle: opTurtle,
+      idle: opIdle, typing: opTyping, owl: opOwl, octopus: opOctopus, turtle: opTurtle,
     };
-    const players = { idle: pIdle, typing: pTyping, eagle: pEagle, owl: pOwl, turtle: pTurtle };
+    const players = { idle: pIdle, typing: pTyping, owl: pOwl, octopus: pOctopus, turtle: pTurtle };
 
     // 새 영상을 최상위로 올린 뒤 fade in만 실행
     // — 캐릭터가 말할 때는 배경(idle)을 완전히 끄지 않고 어둡게 남겨 영상이 "멈춘 것처럼" 보이지 않게 함
@@ -177,7 +177,7 @@ export const ForumHeroStage = React.memo(function ForumHeroStage({
       useNativeDriver: true,
     }).start(() => {
       const speaking =
-        currentKey === 'eagle' || currentKey === 'owl' || currentKey === 'turtle';
+        currentKey === 'owl' || currentKey === 'octopus' || currentKey === 'turtle';
       if (speaking) {
         opIdle.setValue(0.34);
         (Object.keys(allOps) as VideoKey[]).forEach((k) => {
@@ -202,8 +202,8 @@ export const ForumHeroStage = React.memo(function ForumHeroStage({
   const layers: { key: VideoKey; player: ReturnType<typeof useVideoPlayer>; op: Animated.Value }[] = [
     { key: 'idle',   player: pIdle,   op: opIdle },
     { key: 'typing', player: pTyping, op: opTyping },
-    { key: 'eagle',  player: pEagle,  op: opEagle },
-    { key: 'owl',    player: pOwl,    op: opOwl },
+    { key: 'owl',     player: pOwl,     op: opOwl },
+    { key: 'octopus', player: pOctopus, op: opOctopus },
     { key: 'turtle', player: pTurtle, op: opTurtle },
   ];
 

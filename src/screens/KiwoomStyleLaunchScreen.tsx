@@ -162,72 +162,16 @@ export function KiwoomStyleLaunchScreen({ waitingSession = false }: Props) {
     <View style={styles.root}>
       <StatusBar style="light" />
       <View style={[styles.gradient, { paddingTop: insets.top + 10 }]}>
-        <Animated.View
-          style={[
-            styles.brandRow,
-            {
-              opacity: wordOpacity,
-              transform: [{ translateX: wordSlideX }],
-            },
-          ]}
-        >
-          <View style={styles.wordmarkWrap}>
-            <Image
-              source={IMG_WORDMARK}
-              style={styles.wordmarkImg}
-              resizeMode="contain"
-              accessibilityLabel="키움증권"
-            />
-          </View>
-          <Text style={styles.brandSep}>|</Text>
-          <Text style={styles.modeText}>간편모드</Text>
-        </Animated.View>
-
-        <View style={styles.heroBlock}>
-          <Text style={styles.headline}>
-            주식 더모으기로{'\n'}투자를 더 쉽게
-          </Text>
-
-          <View style={styles.candleRow}>
-            <View style={[styles.candle, styles.candleLeft, { height: 18, backgroundColor: ACCENT_BLUE }]} />
-            <View style={[styles.candle, { height: 26, backgroundColor: ACCENT_PINK }]} />
-            <View style={styles.candleDot} />
-          </View>
-
-          <View style={[styles.heroStage, { maxHeight: winW * 1.05 }]}>
-            <Animated.View style={[styles.heroImg, { opacity: heroOpacity }]}>
-              <View style={[styles.knockoutFill, KNOCKOUT_WHITE]}>
-                <Image
-                  source={IMG_HERO}
-                  style={StyleSheet.absoluteFillObject}
-                  resizeMode="contain"
-                  accessibilityLabel="스플래시 히어로"
-                />
-              </View>
-            </Animated.View>
-            <Animated.View
-              style={[
-                styles.cartImg,
-                {
-                  opacity: cartOverlayOpacity,
-                  transform: [{ translateY: cartTranslateY }, { scale: cartScale }],
-                },
-              ]}
-            >
-              <View style={[styles.knockoutFill, KNOCKOUT_WHITE]}>
-                <Image
-                  source={IMG_CART}
-                  style={StyleSheet.absoluteFillObject}
-                  resizeMode="contain"
-                  accessibilityLabel="장바구니 로고"
-                />
-              </View>
-            </Animated.View>
+        <View style={styles.launchSpacer}>
+          <View style={styles.centerLogoWrap}>
+            <Image source={IMG_WORDMARK} style={styles.splashWordmark} resizeMode="contain" />
+            <Image source={require('../../assets/logos/kiwoom.png')} style={styles.splashKiwoomLogo} resizeMode="contain" />
+            <Text style={styles.splashTagline}>키움 간편모드</Text>
           </View>
         </View>
 
         <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 20) }]}>
-          <Text style={styles.ver}>Ver.1.5.7</Text>
+          <Text style={styles.ver}>로딩 중</Text>
           <Text style={styles.statusTxt}>
             {waitingSession ? '세션을 준비하는 중입니다.' : '실행 준비중 입니다.'}
           </Text>
@@ -251,6 +195,11 @@ export function KiwoomStyleLaunchScreen({ waitingSession = false }: Props) {
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: SPLASH_BG },
   gradient: { flex: 1, backgroundColor: SPLASH_BG },
+  launchSpacer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  centerLogoWrap: { alignItems: 'center', gap: 16 },
+  splashWordmark: { width: 160, height: 36 },
+  splashKiwoomLogo: { width: 80, height: 80 },
+  splashTagline: { color: 'rgba(255,255,255,0.7)', fontSize: 13, fontWeight: '600', letterSpacing: 1.2 },
   brandRow: {
     flexDirection: 'row',
     alignItems: 'center',

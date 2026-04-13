@@ -3,7 +3,7 @@
  * 애니메이션 트리거는 UI에서 `agent_id` → speakerId 매핑으로 연결합니다.
  */
 
-export type DebateAgentId = 'eagle' | 'owl' | 'turtle';
+export type DebateAgentId = 'owl' | 'turtle' | 'octopus';
 
 /** 한 에이전트의 한 발화 (순차 재생·채팅 버블·Lottie 구간 트리거의 단위) */
 export type DebateAgentTurn = {

@@ -352,9 +352,6 @@ export function ExploreMainScreen({ navigation }: Props) {
               <Text style={styles.talkChange}>{RANKS[1].chg}</Text>
             </View>
           </Pressable>
-          <Pressable style={styles.moreBtn} onPress={() => openForumDebate(RANKS[0])}>
-            <Text style={styles.moreText}>전체 공론장 보기</Text>
-          </Pressable>
         </View>
 
         <View style={[styles.card, styles.newsCard]}>

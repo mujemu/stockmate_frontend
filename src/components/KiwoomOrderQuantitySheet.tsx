@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Image,
   Pressable,
@@ -39,6 +39,14 @@ export type KiwoomOrderQuantitySheetProps = {
   kimooniLead?: string;
   /** 불릿 미사용 시 긴 본문(기존) */
   kimooniBody?: string;
+  /** 위반 시: 짧은 원칙명만(최대 2줄 + 더보기), 불릿·scoreLine 대신 사용 */
+  kimooniPrincipleSummaries?: string[];
+  /** 위반 시 부제 (기본: 다음의 원칙에 어긋날 수 있어요.) */
+  kimooniViolationSubtitle?: string;
+  /** 점검방 유도 한 줄 (기본: 더 보려면 지금 점검방에서 확인해보세요!) */
+  kimooniForumHintLine?: string;
+  /** 점검방 CTA 문구 */
+  kimooniDebateCtaLabel?: string;
   /** 점검방(DebateRoom)으로 이동 (주문 전 원칙 논의) */
   onOpenDebate?: () => void;
   /** 행동 로그·개입 문구 로딩 중 */
@@ -92,11 +100,20 @@ export function KiwoomOrderQuantitySheet({
   kimooniMoreInForumCount,
   kimooniLead,
   kimooniBody,
+  kimooniPrincipleSummaries,
+  kimooniViolationSubtitle,
+  kimooniForumHintLine,
+  kimooniDebateCtaLabel = '점검방 입장하기',
   onOpenDebate,
   loadingBehavior,
   submitDisabled = false,
   submitDisabledReason,
 }: KiwoomOrderQuantitySheetProps) {
+  const [principleSummariesExpanded, setPrincipleSummariesExpanded] = useState(false);
+  const summariesKey = kimooniPrincipleSummaries?.join('\u0001') ?? '';
+  useEffect(() => {
+    setPrincipleSummariesExpanded(false);
+  }, [summariesKey]);
   const accent = orderType === 'buy' ? '#E53935' : '#5C6BC0';
   const kimooniAvatar = require('../../assets/services/guard_octopus.png');
   const limitFormatted = useMemo(() => {
@@ -288,6 +305,7 @@ export function KiwoomOrderQuantitySheet({
         {(kimooniTitle ||
           kimooniBody ||
           (kimooniBullets && kimooniBullets.length > 0) ||
+          (kimooniPrincipleSummaries && kimooniPrincipleSummaries.length > 0) ||
           Boolean(kimooniScoreLine?.trim())) ? (
           <View style={styles.kimooniBar}>
             <View style={styles.kimooniInner}>
@@ -295,7 +313,47 @@ export function KiwoomOrderQuantitySheet({
               <View style={styles.kimooniTextCol}>
                 <Text style={styles.kimooniBarTitle}>{kimooniTitle ?? '키문이 원칙 코치'}</Text>
                 {loadingBehavior ? (
-                  <Text style={styles.kimooniBarBody}>원칙 점검 결과를 불러오는 중이에요…</Text>
+                  <Text style={styles.kimooniBarBody}>원칙 점검중이에요. 잠시만 기다려주세요.</Text>
+                ) : kimooniPrincipleSummaries && kimooniPrincipleSummaries.length > 0 ? (
+                  <>
+                    <Text style={styles.kimooniViolationSubtitle}>
+                      {kimooniViolationSubtitle ?? '다음의 원칙에 어긋날 수 있어요.'}
+                    </Text>
+                    <View style={styles.kimooniPrincipleBlock}>
+                      {(principleSummariesExpanded
+                        ? kimooniPrincipleSummaries
+                        : kimooniPrincipleSummaries.slice(0, 2)
+                      ).map((line, i) => (
+                        <Text
+                          key={`${i}-${line.slice(0, 24)}`}
+                          style={styles.kimooniPrincipleLine}
+                          numberOfLines={3}
+                        >
+                          {line}
+                        </Text>
+                      ))}
+                    </View>
+                    {kimooniPrincipleSummaries.length > 2 ? (
+                      <Pressable
+                        onPress={() => setPrincipleSummariesExpanded((v) => !v)}
+                        hitSlop={8}
+                        style={styles.kimooniMoreToggle}
+                      >
+                        <Text style={styles.kimooniMoreToggleTxt}>
+                          {principleSummariesExpanded ? '접기' : '더보기'}
+                        </Text>
+                      </Pressable>
+                    ) : null}
+                    <Text style={styles.kimooniForumHint}>
+                      {kimooniForumHintLine ?? '더 보려면 지금 점검방에서 확인해보세요!'}
+                    </Text>
+                    {onOpenDebate ? (
+                      <Pressable style={styles.kimooniDebateBtnWide} onPress={onOpenDebate}>
+                        <Ionicons name="chatbubbles-outline" size={18} color="#fff" />
+                        <Text style={styles.kimooniDebateBtnWideTxt}>{kimooniDebateCtaLabel}</Text>
+                      </Pressable>
+                    ) : null}
+                  </>
                 ) : kimooniBullets && kimooniBullets.length > 0 ? (
                   <>
                     {kimooniScoreLine ? (
@@ -318,7 +376,7 @@ export function KiwoomOrderQuantitySheet({
                     {onOpenDebate ? (
                       <Pressable style={styles.kimooniDebateBtnWide} onPress={onOpenDebate}>
                         <Ionicons name="chatbubbles-outline" size={18} color="#fff" />
-                        <Text style={styles.kimooniDebateBtnWideTxt}>지금 점검방 입장</Text>
+                        <Text style={styles.kimooniDebateBtnWideTxt}>{kimooniDebateCtaLabel}</Text>
                       </Pressable>
                     ) : null}
                   </>
@@ -331,7 +389,7 @@ export function KiwoomOrderQuantitySheet({
                     {onOpenDebate ? (
                       <Pressable style={styles.kimooniDebateBtnWide} onPress={onOpenDebate}>
                         <Ionicons name="chatbubbles-outline" size={18} color="#fff" />
-                        <Text style={styles.kimooniDebateBtnWideTxt}>지금 점검방 입장</Text>
+                        <Text style={styles.kimooniDebateBtnWideTxt}>{kimooniDebateCtaLabel}</Text>
                       </Pressable>
                     ) : null}
                   </>
@@ -641,6 +699,24 @@ const styles = StyleSheet.create({
   kimooniAvatar: { width: 44, height: 44, borderRadius: 22, borderWidth: 2, borderColor: '#7E57C2' },
   kimooniTextCol: { flex: 1, gap: 6 },
   kimooniBarTitle: { fontSize: 14, fontWeight: '800', color: '#4A148C' },
+  kimooniViolationSubtitle: {
+    fontSize: 13,
+    lineHeight: 19,
+    color: '#4A4A5A',
+    fontWeight: '600',
+    marginTop: 2,
+  },
+  kimooniPrincipleBlock: { gap: 6, marginTop: 4 },
+  kimooniPrincipleLine: { fontSize: 13, lineHeight: 20, color: '#1A1D2D', fontWeight: '700' },
+  kimooniMoreToggle: { alignSelf: 'flex-start', marginTop: 4, paddingVertical: 2 },
+  kimooniMoreToggleTxt: { fontSize: 13, fontWeight: '800', color: '#5E35B1' },
+  kimooniForumHint: {
+    fontSize: 12,
+    lineHeight: 17,
+    color: '#5E6478',
+    fontWeight: '600',
+    marginTop: 10,
+  },
   kimooniBarBody: { fontSize: 13, lineHeight: 19, color: '#4A4A5A', fontWeight: '500' },
   kimooniScore: { fontSize: 12, color: '#6A1B9A', fontWeight: '700', marginBottom: 4 },
   kimooniBulletBlock: { gap: 6 },

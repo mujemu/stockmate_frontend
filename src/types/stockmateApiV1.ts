@@ -155,7 +155,12 @@ export type BehaviorType =
 
 export type InterventionState = 'created' | 'delivered' | 'read' | 'decided';
 
-export type UserDecision = 'continue' | 'cancel' | 'ask_more';
+export type UserDecision =
+  | 'continue'
+  | 'cancel'
+  | 'ask_more'
+  | 'claim_compliance'
+  | 'reconsider';
 
 export type BehaviorLogDto = {
   id: string;
@@ -195,6 +200,12 @@ export type BehaviorLogCreateResponse = {
   intervention_message: string | null;
   violated_principles: string[] | null;
   violation_details?: OrderPrincipleViolationDetailDto[] | null;
+  force_check_required?: boolean | null;
+  strike_count?: number | null;
+  branch_suggestion?: 'exception_handling' | 'claim_compliance' | 'reconsider' | null;
+  force_check_room?: boolean | null;
+  check_room_required?: boolean | null;
+  require_check_room?: boolean | null;
 };
 
 export type PatchBehaviorLogStateBody = { state: InterventionState };
@@ -348,17 +359,17 @@ export type OrderPrincipleViolationRankItemDto = {
 /** `POST .../agent-reply` */
 export type AgentReplyBody = {
   user_message: string;
-  agent_id?: 'eagle' | 'owl' | 'turtle' | null;
+  agent_id?: 'owl' | 'turtle' | 'octopus' | null;
   stock_name?: string | null;
   order_principle_violations?: OrderPrincipleViolationRankItemDto[] | null;
 };
 
 export type AgentReplyDto = {
-  agent_id: 'eagle' | 'owl' | 'turtle';
+  agent_id: 'owl' | 'turtle' | 'octopus';
   agent_name: string;
   content: string;
   post: ForumPostOutDto;
-  /** 주문 점검방: 키문이 이후 기자·회계사 조력 발언(순서대로) */
+  /** 주문 점검방: 키문이 이후 키엉이·키북이 조력 발언(순서대로) */
   extra_replies?: AgentReplyDto[];
   /** 점검방 키문이: 서버가 본문 뒤 블록에서 파싱한 후속 질문 3개 */
   order_cli_suggestions?: string[] | null;
@@ -376,7 +387,7 @@ export type NewsBulletDto = {
 export type NewsBriefDto = {
   bullets: NewsBulletDto[];
   agent_name: string;
-  agent_id: 'eagle' | 'owl' | 'turtle';
+  agent_id: 'owl' | 'turtle' | 'octopus';
 };
 
 export type SurveySubmissionDto = {

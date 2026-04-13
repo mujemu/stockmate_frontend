@@ -7,35 +7,26 @@ import {
   Pressable,
   ScrollView,
   Image,
-  Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Colors } from '../config/colors';
+import { resolveStockLogo } from '../config/stockLogoAssets';
 import { useUserSession } from '../context/UserSessionContext';
 import { StockmateApiV1 } from '../services/stockmateApiV1';
 import type { SimulatedHoldingDto } from '../types/stockmateApiV1';
-
-const SECTORS = [
-  { key: '금융', desc: '금리·배당·NIM 중심 가치주' },
-  { key: '정보기술', desc: 'HBM·AI·반도체 업황 사이클' },
-  { key: '필수소비재', desc: 'K-뷰티·K-푸드·해외 매출' },
-];
 
 interface Props {
   navigation: any;
 }
 
 const KEYPAD = ['4', '1', '7', '3', '5', '0', '2', '8', '6', '', '9', '⌫'];
-const SERVICE_ICON_FORUM = require('../../assets/services/service_forum_icon.png');
 const SERVICE_ICON_REPORT = require('../../assets/services/service_report_icon.png');
 
 export function AssetsScreen({ navigation }: Props) {
   const [pin, setPin] = useState('');
-  const [sectorModalVisible, setSectorModalVisible] = useState(false);
   const { userId, ready: sessionReady } = useUserSession();
   const [simHoldings, setSimHoldings] = useState<SimulatedHoldingDto[]>([]);
 
-  const openSectorModal = () => setSectorModalVisible(true);
   const openReport = () => navigation.getParent()?.navigate('OwlReport' as never);
 
   /** 탐색에서 종목 눌렀을 때와 동일하게 종목 상세(차트·내종목)로 진입 */
@@ -48,16 +39,6 @@ export function AssetsScreen({ navigation }: Props) {
         stockPrice: `${h.last_mark_won.toLocaleString('ko-KR')}원`,
         stockChange: `${h.pnl_pct >= 0 ? '+' : ''}${h.pnl_pct.toFixed(2)}%`,
       },
-    } as never);
-  };
-
-  const enterDebateWithSector = (sectorKey: string) => {
-    setSectorModalVisible(false);
-    // merge: false — 이전 공론장 진입의 종목·주문 params 가 남지 않도록 전체 교체
-    navigation.getParent()?.navigate({
-      name: 'DebateRoom',
-      params: { sectorKey, forumEntrySource: 'sector' },
-      merge: false,
     } as never);
   };
 
@@ -172,21 +153,6 @@ export function AssetsScreen({ navigation }: Props) {
               styles.serviceBtn,
               pressed && styles.serviceBtnPressed,
             ]}
-            onPress={openSectorModal}
-          >
-            <View style={styles.serviceInner}>
-              <Image source={SERVICE_ICON_FORUM} style={styles.serviceIcon} resizeMode="contain" />
-              <View style={styles.serviceTextWrap}>
-                <Text style={styles.serviceTopText}>AI 에이전트와</Text>
-                <Text style={styles.serviceMainText}>공론장 입장하기</Text>
-              </View>
-            </View>
-          </Pressable>
-          <Pressable
-            style={({ pressed }) => [
-              styles.serviceBtn,
-              pressed && styles.serviceBtnPressed,
-            ]}
             onPress={openReport}
           >
             <View style={styles.serviceInner}>
@@ -247,7 +213,14 @@ export function AssetsScreen({ navigation }: Props) {
                   accessibilityLabel={`${h.stock_name} 종목 상세`}
                 >
                   <View style={styles.hLogoSmall}>
-                    <Text style={styles.hLogoSmallTxt}>{h.stock_name.slice(0, 1)}</Text>
+                    {(() => {
+                      const src = resolveStockLogo(h.stock_code, h.stock_name);
+                      return src ? (
+                        <Image source={src} style={styles.hLogoSmallImg} resizeMode="contain" />
+                      ) : (
+                        <Text style={styles.hLogoSmallTxt}>{h.stock_name.slice(0, 1)}</Text>
+                      );
+                    })()}
                   </View>
                   <View style={styles.holdingMid}>
                     <Text style={styles.holdingName} numberOfLines={1}>
@@ -298,34 +271,6 @@ export function AssetsScreen({ navigation }: Props) {
         </View>
         </View>
       </ScrollView>
-
-      {/* 섹터 선택 모달 */}
-      <Modal
-        visible={sectorModalVisible}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setSectorModalVisible(false)}
-      >
-        <Pressable style={styles.modalDim} onPress={() => setSectorModalVisible(false)} />
-        <View style={styles.sectorSheet}>
-          <View style={styles.sheetHandle} />
-          <Text style={styles.sheetTitle}>섹터를 선택하세요</Text>
-          <Text style={styles.sheetSub}>선택한 섹터의 AI 에이전트와 토론합니다.</Text>
-          {SECTORS.map((s) => (
-            <Pressable
-              key={s.key}
-              style={({ pressed }) => [styles.sectorBtn, pressed && styles.sectorBtnPressed]}
-              onPress={() => enterDebateWithSector(s.key)}
-            >
-              <View style={styles.sectorTextWrap}>
-                <Text style={styles.sectorName}>{s.key}</Text>
-                <Text style={styles.sectorDesc}>{s.desc}</Text>
-              </View>
-              <Text style={styles.sectorChevron}>›</Text>
-            </Pressable>
-          ))}
-        </View>
-      </Modal>
     </SafeAreaView>
   );
 }
@@ -464,14 +409,16 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   hLogoSmall: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 46,
+    height: 46,
+    borderRadius: 23,
     backgroundColor: '#EDE9FE',
     alignItems: 'center',
     justifyContent: 'center',
+    overflow: 'hidden',
   },
-  hLogoSmallTxt: { fontSize: 14, fontWeight: '900', color: Colors.primary },
+  hLogoSmallImg: { width: 46, height: 46 },
+  hLogoSmallTxt: { fontSize: 15, fontWeight: '900', color: Colors.primary },
   holdingMid: { flex: 1, minWidth: 0 },
   holdingName: { fontSize: 15, fontWeight: '800', color: Colors.text },
   holdingQty: { fontSize: 12, color: '#7C8193', fontWeight: '600', marginTop: 2 },
@@ -526,44 +473,5 @@ const styles = StyleSheet.create({
   },
   key: { width: '30%', height: 70, alignItems: 'center', justifyContent: 'center' },
   keyText: { fontSize: 42, color: '#2D2F38', fontWeight: '500' },
-
-  // 섹터 선택 모달
-  modalDim: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.45)',
-  },
-  sectorSheet: {
-    backgroundColor: '#fff',
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    paddingHorizontal: 20,
-    paddingBottom: 36,
-    paddingTop: 12,
-  },
-  sheetHandle: {
-    width: 40, height: 4, borderRadius: 2,
-    backgroundColor: '#D8DAE5',
-    alignSelf: 'center',
-    marginBottom: 16,
-  },
-  sheetTitle: { fontSize: 20, fontWeight: '900', color: '#1A1D2B', marginBottom: 4 },
-  sheetSub: { fontSize: 13, color: '#7A7F93', fontWeight: '600', marginBottom: 20 },
-  sectorBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 16,
-    paddingHorizontal: 14,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#EAEAF2',
-    backgroundColor: '#FAFAFD',
-    marginBottom: 10,
-    gap: 12,
-  },
-  sectorBtnPressed: { backgroundColor: '#F0EEF9' },
-  sectorTextWrap: { flex: 1 },
-  sectorName: { fontSize: 16, fontWeight: '800', color: '#1A1D2B' },
-  sectorDesc: { fontSize: 12, color: '#7A7F93', fontWeight: '600', marginTop: 2 },
-  sectorChevron: { fontSize: 20, color: '#C5C8D4', fontWeight: '300' },
 });
 

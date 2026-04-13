@@ -2,11 +2,10 @@ import React from 'react';
 import { InteractionManager, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CommonActions } from '@react-navigation/native';
-import { Ionicons } from '@expo/vector-icons';
 import { navigationRef } from '../navigation/navigationRef';
 
 const ACCENT = '#4B56C8';
-const CTA_BG = '#1A1F3C';
+const CTA_BG = '#8736E5';
 
 type Props = {
   visible: boolean;
@@ -47,10 +46,6 @@ export function PrinciplesSetupPromptModal({ visible, onClose }: Props) {
         </View>
 
         <View style={styles.body}>
-          <View style={styles.iconCircle}>
-            <Ionicons name="alert" size={28} color="#5C6370" />
-          </View>
-
           <Text style={styles.headline}>
             고객님은{' '}
             <Text style={styles.headlineAccent}>투자 판단 원칙 설정</Text>
@@ -91,16 +86,6 @@ const styles = StyleSheet.create({
   },
   headerTitle: { fontSize: 17, fontWeight: '900', color: '#111' },
   body: { flex: 1, paddingHorizontal: 22, paddingTop: 28 },
-  iconCircle: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: '#EEF0F4',
-    alignItems: 'center',
-    justifyContent: 'center',
-    alignSelf: 'center',
-    marginBottom: 22,
-  },
   headline: {
     fontSize: 18,
     fontWeight: '800',

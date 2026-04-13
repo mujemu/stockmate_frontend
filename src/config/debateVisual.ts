@@ -8,7 +8,7 @@ export const DEBATE_USE_LOTTIE = false;
 
 export const FORUM_LOTTIE_SOURCE = require('../../assets/debate/forum_scene.json');
 
-export type ForumLottieAgentId = 'eagle' | 'owl' | 'turtle';
+export type ForumLottieAgentId = 'owl' | 'turtle' | 'octopus';
 
 /**
  * 에이전트가 말할 때 재생할 Lottie 프레임 구간 [시작, 끝] (포함).
@@ -19,8 +19,8 @@ export const FORUM_LOTTIE_TALK_FRAMES: Partial<
   Record<ForumLottieAgentId, readonly [number, number]>
 > = {
   // 예시 (실제 JSON에 맞게 수정):
-  // eagle: [0, 45],
-  // owl: [46, 90],
+  // owl: [0, 45],
+  // octopus: [46, 90],
   // turtle: [91, 135],
 };
 
