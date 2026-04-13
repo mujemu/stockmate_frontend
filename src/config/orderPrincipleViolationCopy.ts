@@ -1,9 +1,13 @@
 /**
- * 매매 직전 공론장 진입 전 — 위반 원칙 미리보기용 카피.
- * `violation_details`가 있으면 서버 `reason`을 쓰고, 없으면 라벨 휴리스틱으로 보조한다.
+ * 매매 직전 점검방 진입 전 — 위반 원칙 미리보기용 카피.
+ * 서버 `violation_details` 순서를 유지한다. 사용자 원칙 문장(+파라미터 치환)이 있으면 시트 불릿에 우선 사용한다.
  */
 
-import type { OrderPrincipleViolationDetailDto } from '../types/stockmateApiV1';
+import { defaultParamsForRank, formatPrincipleTemplateText } from './principleUiSpecs';
+import type {
+  OrderPrincipleViolationDetailDto,
+  PrinciplesStatusDto,
+} from '../types/stockmateApiV1';
 
 export type OrderSide = 'buy' | 'sell';
 
@@ -126,15 +130,55 @@ export function explainPrincipleViolationOneLine(label: string, orderSide: Order
   return `이번 ${sideWord} 조건이 「${t || '해당 원칙'}」에 적어 둔 기준과 맞는지, 한 번 더 맞춰볼 필요가 있어요.`;
 }
 
+/**
+ * 주문 시트·점검방 연계용: 위반 `default_rank`마다 DB에 저장한 원칙 문장을 파라미터까지 반영해 한 줄씩 만든다.
+ * 원칙 상태를 아직 못 불렀으면 서버 `reason`으로 대체한다.
+ */
+export function buildFormattedViolationLinesForOrderSheet(
+  status: PrinciplesStatusDto | null | undefined,
+  violationDetails: OrderPrincipleViolationDetailDto[] | null | undefined,
+  orderSide: OrderSide,
+): string[] {
+  const details = violationDetails?.filter((d) => d?.short_label?.trim()) ?? [];
+  if (details.length === 0) return [];
+
+  const rankings = status?.rankings ?? [];
+  const byDefaultRank = new Map<number, (typeof rankings)[number]>();
+  for (const r of rankings) {
+    byDefaultRank.set(r.default_rank, r);
+  }
+  const paramsRoot = status?.params ?? null;
+
+  const lines: string[] = [];
+  for (const d of details) {
+    const dr = Number(d.default_rank);
+    const row = byDefaultRank.get(dr);
+    let line = '';
+    if (row) {
+      const bag = { ...defaultParamsForRank(dr), ...(paramsRoot?.[row.principle_id] ?? {}) };
+      const template = (row.text || '').trim() || normLabel(d.short_label);
+      line = formatPrincipleTemplateText(template, dr, bag).trim();
+    }
+    if (!line) {
+      const fromServer = normLabel(d.reason);
+      line = fromServer || explainPrincipleViolationOneLine(d.short_label, orderSide);
+    }
+    if (line) lines.push(line);
+  }
+  return lines;
+}
+
 export type KimooniOrderPreview = {
   /** 상단 한 줄: 무엇을 먼저 볼지 */
   scoreLine: string;
-  /** 불릿(최대 maxBullets) — 「원칙」— 이유 */
+  /** 불릿(최대 maxBullets) — 원칙 짧은 라벨만 */
   bullets: string[];
-  /** 공론장에서 이어서 볼 나머지 개수 */
+  /** 점검방에서 이어서 볼 나머지 개수 */
   moreInForumCount: number;
-  /** 공론장·후속 점검의 앵커 라벨 (저장 순위 1위) */
+  /** 점검방·후속 점검의 앵커 라벨 (저장 순위 1위) */
   primaryLabel: string | null;
+  /** 짧은 라벨 목록(순서 유지) */
+  keywords: string[];
 };
 
 const MAX_SHEET_BULLETS = 2;
@@ -145,15 +189,15 @@ const MAX_SHEET_BULLETS = 2;
 export function buildKimooniOrderViolationPreview(
   violatedPrinciples: string[],
   orderSide: OrderSide,
-  interventionMessage: string | null | undefined,
+  _interventionMessage: string | null | undefined,
   violationDetails?: OrderPrincipleViolationDetailDto[] | null,
+  /** 저장 원칙 문장(분·% 등 치환 완료). 있으면 불릿에 짧은 라벨 대신 이 문장을 쓴다. */
+  formattedPrincipleLines?: string[] | null,
 ): KimooniOrderPreview {
-  const fromServer =
-    violationDetails?.filter((d) => d.short_label?.trim() && d.reason?.trim()) ?? [];
+  const fromServer = violationDetails?.filter((d) => d.short_label?.trim()) ?? [];
 
   const seen = new Set<string>();
   const ordered: string[] = [];
-  const reasonByLabel = new Map<string, string>();
 
   if (fromServer.length > 0) {
     for (const d of fromServer) {
@@ -161,7 +205,6 @@ export function buildKimooniOrderViolationPreview(
       if (!n || seen.has(n)) continue;
       seen.add(n);
       ordered.push(d.short_label.trim());
-      reasonByLabel.set(n, d.reason.trim());
     }
   } else {
     for (const raw of violatedPrinciples) {
@@ -175,45 +218,42 @@ export function buildKimooniOrderViolationPreview(
   const primary = ordered.length > 0 ? normLabel(ordered[0]) : null;
   const sideWord = orderSide === 'buy' ? '매수' : '매도';
 
-  const iv = normLabel(interventionMessage ?? '');
-  const ivShort =
-    iv.length > 0
-      ? iv.length > 96
-        ? `${iv.slice(0, 94)}…`
-        : iv
-      : '';
+  const useFormatted =
+    Array.isArray(formattedPrincipleLines) && formattedPrincipleLines.some((s) => normLabel(s));
 
   let scoreLine: string;
-  if (primary) {
-    scoreLine =
-      `정해 둔 원칙 순서를 보면, 이번 ${sideWord}에서 가장 먼저 볼 항목은 「${primary}」예요.` +
-      (ivShort ? ` ${ivShort}` : '');
-  } else if (ivShort) {
-    scoreLine = ivShort;
+  if (useFormatted) {
+    scoreLine = `이번 ${sideWord}가 투자 원칙 화면에 적어 둔 문장과 맞는지, 아래를 기준으로 한 번 더 보면 좋아요.`;
+  } else if (primary) {
+    scoreLine = `이번 ${sideWord}에서 먼저 짚을 원칙은 「${primary}」예요.`;
   } else {
     scoreLine = `이번 ${sideWord}가 정해 둔 기준과 맞는지, 한 번 더 볼 만해요.`;
   }
 
-  const bullets = ordered.slice(0, MAX_SHEET_BULLETS).map((label) => {
-    const display = normLabel(label);
-    const why =
-      reasonByLabel.get(display) ?? explainPrincipleViolationOneLine(label, orderSide);
-    return `「${display}」 — ${why}`;
-  });
+  const bullets = useFormatted
+    ? formattedPrincipleLines!.map((s) => normLabel(s)).filter(Boolean).slice(0, MAX_SHEET_BULLETS)
+    : ordered.slice(0, MAX_SHEET_BULLETS).map((label) => {
+        const display = normLabel(label);
+        return `「${display}」`;
+      });
 
-  const moreInForumCount = Math.max(0, ordered.length - MAX_SHEET_BULLETS);
+  const bulletSourceLen = useFormatted
+    ? formattedPrincipleLines!.map((s) => normLabel(s)).filter(Boolean).length
+    : ordered.length;
+  const moreInForumCount = Math.max(0, bulletSourceLen - MAX_SHEET_BULLETS);
 
   return {
     scoreLine,
     bullets,
     moreInForumCount,
     primaryLabel: primary,
+    keywords: [...ordered],
   };
 }
 
 export type OrderPrincipleRecapItem = { label: string; reasonOneLine: string };
 
-/** 점검방 리스트: 위반·점검 대상 원칙을 **전부** 한 줄씩(서버 reason 우선). */
+/** 점검방 리스트: 위반·점검 대상 원칙을 **전부** 짧은 라벨만(상세 한 줄 없음). */
 export function buildOrderPrincipleRecapItemsForDebate(
   source:
     | {
@@ -225,7 +265,6 @@ export function buildOrderPrincipleRecapItemsForDebate(
     | undefined,
 ): OrderPrincipleRecapItem[] {
   if (!source) return [];
-  const side: OrderSide = source.orderType === 'sell' ? 'sell' : 'buy';
   const seen = new Set<string>();
   const out: OrderPrincipleRecapItem[] = [];
 
@@ -235,11 +274,7 @@ export function buildOrderPrincipleRecapItemsForDebate(
       const label = normLabel(d.short_label);
       if (!label || seen.has(label)) continue;
       seen.add(label);
-      const r = normLabel(d.reason);
-      out.push({
-        label,
-        reasonOneLine: r || explainPrincipleViolationOneLine(label, side),
-      });
+      out.push({ label, reasonOneLine: '' });
     }
     return out;
   }
@@ -248,10 +283,7 @@ export function buildOrderPrincipleRecapItemsForDebate(
     const label = normLabel(String(raw));
     if (!label || seen.has(label)) continue;
     seen.add(label);
-    out.push({
-      label,
-      reasonOneLine: explainPrincipleViolationOneLine(String(raw), side),
-    });
+    out.push({ label, reasonOneLine: '' });
   }
   return out;
 }

@@ -28,10 +28,14 @@ export type ForumHeroAgent = {
   role: string;
   labelAnchor: { left: DimensionValue; top: DimensionValue };
   heroPan: number;
+  /** 점검방: 이번 점검에 조력하지 않으면 'resting' → 쉬는중(회색) */
+  presence?: 'active' | 'resting';
 };
 
 type Props = {
   speakerId: ForumHeroAgent['id'] | null;
+  /** 말하는 사람 바로 다음 차례(한 명만 주황 대기중). 없으면 전원 쉬는중·대화중만 구분 */
+  nextSpeakerId?: ForumHeroAgent['id'] | null;
   isUserTyping?: boolean;
   agents: ForumHeroAgent[];
 };
@@ -49,15 +53,35 @@ function resolveKey(
 // ── 에이전트 배지 (3개 상시 표시) ────────────────────────────────────────────
 function AgentBadges({
   speakerId,
+  nextSpeakerId,
+  isUserTyping,
   agents,
 }: {
   speakerId: ForumHeroAgent['id'] | null;
+  nextSpeakerId: ForumHeroAgent['id'] | null;
+  isUserTyping: boolean;
   agents: ForumHeroAgent[];
 }) {
   return (
     <>
       {agents.map((agent) => {
+        const isSessionRest = agent.presence === 'resting';
         const isSpeaking = speakerId === agent.id;
+        const isNext = !isSpeaking && nextSpeakerId === agent.id;
+        const idleNoAgentSpeech = speakerId == null && !isUserTyping;
+        let mode: 'speaking' | 'waiting' | 'resting';
+        if (isSessionRest) {
+          mode = 'resting';
+        } else if (isSpeaking) {
+          mode = 'speaking';
+        } else if (idleNoAgentSpeech) {
+          mode = 'resting';
+        } else if (isNext) {
+          mode = 'waiting';
+        } else {
+          mode = 'resting';
+        }
+        const label = mode === 'speaking' ? '대화중' : mode === 'resting' ? '쉬는중' : '대기중';
         return (
           <View
             key={agent.id}
@@ -66,10 +90,32 @@ function AgentBadges({
           >
             <Text style={styles.badgeName}>{agent.name}</Text>
             <Text style={styles.badgeRole}>{agent.role}</Text>
-            <View style={[styles.badgePill, isSpeaking ? styles.badgePillOn : styles.badgePillOff]}>
-              <View style={[styles.badgeDot, isSpeaking && styles.badgeDotOn]} />
-              <Text style={[styles.badgePillTxt, isSpeaking ? styles.badgePillTxtOn : styles.badgePillTxtOff]}>
-                {isSpeaking ? '대화중' : '대기중'}
+            <View
+              style={[
+                styles.badgePill,
+                mode === 'speaking' && styles.badgePillSpeaking,
+                mode === 'waiting' && styles.badgePillWaiting,
+                mode === 'resting' && styles.badgePillResting,
+              ]}
+            >
+              <View
+                style={[
+                  styles.badgeDot,
+                  mode === 'speaking' && styles.badgeDotSpeaking,
+                  mode === 'waiting' && styles.badgeDotWaiting,
+                  mode === 'resting' && styles.badgeDotResting,
+                ]}
+              />
+              <Text
+                style={[
+                  styles.badgePillTxt,
+                  mode === 'speaking' && styles.badgePillTxtSpeaking,
+                  mode === 'waiting' && styles.badgePillTxtWaiting,
+                  mode === 'resting' && styles.badgePillTxtResting,
+                ]}
+                numberOfLines={1}
+              >
+                {label}
               </Text>
             </View>
           </View>
@@ -80,7 +126,12 @@ function AgentBadges({
 }
 
 // ── 메인 컴포넌트 ─────────────────────────────────────────────────────────────
-export const ForumHeroStage = React.memo(function ForumHeroStage({ speakerId, isUserTyping = false, agents }: Props) {
+export const ForumHeroStage = React.memo(function ForumHeroStage({
+  speakerId,
+  nextSpeakerId = null,
+  isUserTyping = false,
+  agents,
+}: Props) {
   // 5개 플레이어 모두 미리 로드 & 루프 재생
   const pIdle   = useVideoPlayer(VIDEOS.idle,   (p) => { p.loop = true; p.muted = true; p.play(); });
   const pTyping = useVideoPlayer(VIDEOS.typing,  (p) => { p.loop = true; p.muted = true; p.play(); });
@@ -176,7 +227,12 @@ export const ForumHeroStage = React.memo(function ForumHeroStage({ speakerId, is
         style={[StyleSheet.absoluteFill, styles.agentBadgeLayer]}
         pointerEvents="none"
       >
-        <AgentBadges speakerId={speakerId} agents={agents} />
+        <AgentBadges
+          speakerId={speakerId}
+          nextSpeakerId={nextSpeakerId}
+          isUserTyping={isUserTyping}
+          agents={agents}
+        />
       </View>
     </View>
   );
@@ -217,29 +273,44 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
     borderRadius: 14,
   },
-  badgePillOn: {
+  /** 대화중 — 밝은 pill */
+  badgePillSpeaking: {
     backgroundColor: 'rgba(255,255,255,0.95)',
   },
-  badgePillOff: {
-    backgroundColor: 'rgba(0,0,0,0.40)',
+  /** 대기중 — 어두운 pill (주황 점) */
+  badgePillWaiting: {
+    backgroundColor: 'rgba(0,0,0,0.42)',
+  },
+  /** 쉬는중 — 회색 pill */
+  badgePillResting: {
+    backgroundColor: 'rgba(55,55,60,0.72)',
   },
   badgeDot: {
     width: 7,
     height: 7,
     borderRadius: 3.5,
-    backgroundColor: 'rgba(255,255,255,0.4)',
+    backgroundColor: 'rgba(255,255,255,0.35)',
   },
-  badgeDotOn: {
-    backgroundColor: '#34C759',
+  badgeDotSpeaking: {
+    backgroundColor: '#22C55E',
+  },
+  badgeDotWaiting: {
+    backgroundColor: '#F97316',
+  },
+  badgeDotResting: {
+    backgroundColor: '#9CA3AF',
   },
   badgePillTxt: {
     fontSize: 11,
     fontWeight: '800',
   },
-  badgePillTxtOn: {
+  badgePillTxtSpeaking: {
     color: '#1E2748',
   },
-  badgePillTxtOff: {
-    color: 'rgba(255,255,255,0.85)',
+  badgePillTxtWaiting: {
+    color: 'rgba(255,255,255,0.92)',
+  },
+  badgePillTxtResting: {
+    color: 'rgba(209,213,219,0.95)',
   },
 });

@@ -1,7 +1,8 @@
 import React, { useMemo, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../../config/colors';
+import { resolveStockLogo } from '../../config/stockLogoAssets';
 import type { SimulatedHoldingDto } from '../../types/stockmateApiV1';
 
 type HoldingsTab = 'general' | 'decimal';
@@ -107,7 +108,14 @@ export function StockMyHoldingsSection({
             const rowInner = (
               <>
                 <View style={styles.hLogo}>
-                  <Text style={styles.hLogoTxt}>{h.stock_name.slice(0, 1)}</Text>
+                  {(() => {
+                    const src = resolveStockLogo(h.stock_code, h.stock_name);
+                    return src ? (
+                      <Image source={src} style={styles.hLogoImg} resizeMode="contain" />
+                    ) : (
+                      <Text style={styles.hLogoTxt}>{h.stock_name.slice(0, 1)}</Text>
+                    );
+                  })()}
                 </View>
                 <View style={styles.hMid}>
                   <Text style={styles.hName} numberOfLines={1}>
@@ -341,7 +349,9 @@ const styles = StyleSheet.create({
     backgroundColor: '#EDE9FE',
     alignItems: 'center',
     justifyContent: 'center',
+    overflow: 'hidden',
   },
+  hLogoImg: { width: 32, height: 32 },
   hLogoTxt: { fontSize: 16, fontWeight: '900', color: Colors.primary },
   hMid: { flex: 1, minWidth: 0 },
   hName: { fontSize: 14, fontWeight: '800', color: Colors.text },

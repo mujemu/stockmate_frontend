@@ -1,5 +1,5 @@
 /**
- * 이번 달 원칙 위반 — 종목별 상세 (투자 원칙 리포트에서 진입)
+ * 이번 달 원칙 위반 — 종목별 상세 (나의 투자 원칙 화면에서 진입)
  */
 import React, { useCallback, useEffect, useState } from 'react';
 import {

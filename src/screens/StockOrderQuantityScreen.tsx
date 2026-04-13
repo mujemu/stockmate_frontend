@@ -13,8 +13,11 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { KiwoomOrderQuantitySheet } from '../components/KiwoomOrderQuantitySheet';
 import { Colors } from '../config/colors';
-import { buildKimooniOrderViolationPreview } from '../config/orderPrincipleViolationCopy';
-import type { OrderPrincipleViolationDetailDto } from '../types/stockmateApiV1';
+import {
+  buildFormattedViolationLinesForOrderSheet,
+  buildKimooniOrderViolationPreview,
+} from '../config/orderPrincipleViolationCopy';
+import type { OrderPrincipleViolationDetailDto, PrinciplesStatusDto } from '../types/stockmateApiV1';
 import { getStockOrderModalCopy, resolveStockOrderPriceWon } from '../config/stockTradeDetail';
 import { useUserSession } from '../context/UserSessionContext';
 import { navigationRef } from '../navigation/navigationRef';
@@ -87,6 +90,7 @@ export function StockOrderQuantityScreen({ navigation, route }: Props) {
   const [interventionMessage, setInterventionMessage] = useState<string | null>(null);
   const [violatedPrinciples, setViolatedPrinciples] = useState<string[]>([]);
   const [violationDetails, setViolationDetails] = useState<OrderPrincipleViolationDetailDto[]>([]);
+  const [principlesStatus, setPrinciplesStatus] = useState<PrinciplesStatusDto | null>(null);
   const [postTradeLedger, setPostTradeLedger] = useState<ViolationLedger | null>(null);
   const [postTradeViolationsExpanded, setPostTradeViolationsExpanded] = useState(false);
   const [doneLedgerToken, setDoneLedgerToken] = useState(0);
@@ -119,6 +123,22 @@ export function StockOrderQuantityScreen({ navigation, route }: Props) {
       cancel = true;
     };
   }, [orderType, userReady, userId, stockName, stockCode, route.params?.ownedQuantity]);
+
+  useEffect(() => {
+    if (!userReady || !userId) return;
+    let cancel = false;
+    (async () => {
+      try {
+        const s = await StockmateApiV1.principles.getStatus(userId);
+        if (!cancel) setPrinciplesStatus(s);
+      } catch {
+        if (!cancel) setPrinciplesStatus(null);
+      }
+    })();
+    return () => {
+      cancel = true;
+    };
+  }, [userReady, userId]);
 
   useEffect(() => {
     if (orderType !== 'sell' || sellableQty === 'loading') return;
@@ -177,11 +197,14 @@ export function StockOrderQuantityScreen({ navigation, route }: Props) {
 
   const hasDecisionViolation =
     violatedPrinciples.length > 0 || Boolean(interventionMessage?.trim());
-  const previewViolationMessage = interventionMessage
-    ? interventionMessage
-    : hasDecisionViolation
-      ? `${stockName} ${orderType === 'buy' ? '매수' : '매도'}는 정해 둔 투자 원칙과 맞지 않을 수 있어요.`
-      : '지금 점검에서는 급하게 고칠 만한 어긋남은 없어 보여요.';
+  const previewViolationMessage = hasDecisionViolation
+    ? `${stockName} ${orderType === 'buy' ? '매수' : '매도'}는 정해 둔 투자 원칙과 맞지 않을 수 있어요.`
+    : '지금 점검에서는 급하게 고칠 만한 어긋남은 없어 보여요.';
+
+  const formattedViolationLines = useMemo(
+    () => buildFormattedViolationLinesForOrderSheet(principlesStatus, violationDetails, orderType),
+    [principlesStatus, violationDetails, orderType],
+  );
 
   const orderViolationPreview = useMemo(
     () =>
@@ -190,14 +213,53 @@ export function StockOrderQuantityScreen({ navigation, route }: Props) {
         orderType,
         interventionMessage,
         violationDetails,
+        formattedViolationLines,
       ),
-    [violatedPrinciples, orderType, interventionMessage, violationDetails],
+    [
+      violatedPrinciples,
+      orderType,
+      interventionMessage,
+      violationDetails,
+      formattedViolationLines,
+    ],
   );
 
   const topViolationLabel =
     orderViolationPreview.primaryLabel ??
     violatedPrinciples.map((s) => String(s).trim()).find(Boolean) ??
     null;
+
+  const violationKeywordSummary = useMemo(() => {
+    if (orderViolationPreview.keywords.length > 0) {
+      return orderViolationPreview.keywords
+        .map((k) => `「${String(k).replace(/\r?\n/g, ' ').trim()}」`)
+        .join(' ');
+    }
+    return '';
+  }, [orderViolationPreview.keywords]);
+
+  /** 위반 건수(상세 없이 개입만 온 경우는 1건으로 간주) */
+  const violationTopicCount = useMemo(() => {
+    if (violationDetails.length > 0) return violationDetails.length;
+    if (violatedPrinciples.length > 0) return violatedPrinciples.length;
+    return interventionMessage?.trim() ? 1 : 0;
+  }, [violationDetails.length, violatedPrinciples.length, interventionMessage]);
+
+  /** 위반 안내 전 사용자에게 순서·초점을 묻는 한 마디 */
+  const kimooniViolationOpener = useMemo(() => {
+    if (!hasDecisionViolation || violationTopicCount < 1) return '';
+    if (violationTopicCount > 1) {
+      return '어느 위반 사항부터 이야기를 듣고 싶으신가요?\n\n';
+    }
+    return '먼저 아래 내용을 읽어 보시겠어요?\n\n';
+  }, [hasDecisionViolation, violationTopicCount]);
+
+  const kimooniScoreLineWithOpener = useMemo(() => {
+    if (!hasDecisionViolation || submittingOrder) return undefined;
+    const base = orderViolationPreview.scoreLine?.trim();
+    if (!base) return undefined;
+    return `${kimooniViolationOpener}${base}`;
+  }, [hasDecisionViolation, submittingOrder, kimooniViolationOpener, orderViolationPreview.scoreLine]);
 
   const useKimooniBulletMode =
     hasDecisionViolation && !submittingOrder && orderViolationPreview.bullets.length > 0;
@@ -206,27 +268,32 @@ export function StockOrderQuantityScreen({ navigation, route }: Props) {
     ? '키문이: 원칙 위반 감지'
     : '키문이: 원칙만 한 번 더 짚어 볼게요';
 
-  const kimooniLead =
-    hasDecisionViolation
-      ? '수량이나 가격을 바꾸거나, 공론장에서 이야기한 뒤 다시 시도해 보세요!'
-      : undefined;
+  const kimooniLead = hasDecisionViolation
+    ? '적어 두신 기준을 확인하신 뒤, 계속할지 잠시 멈출지 결정해 보세요.'
+    : undefined;
 
   const kimooniCoachBody = useMemo(() => {
-    if (interventionMessage?.trim()) {
-      const tail = topViolationLabel
-        ? `\n\n가장 먼저 볼 원칙: 「${topViolationLabel}」 — 위 한 줄 요약을 보시고, 공론장에서 키문이와 맞춰 가 보세요.`
-        : '\n\n공론장에서 키문이와 이유를 나눠 보시겠어요?';
-      return `${interventionMessage.trim()}${tail}`;
-    }
     if (hasDecisionViolation) {
-      return `${previewViolationMessage}${topViolationLabel ? `\n\n먼저 볼 곳: 「${topViolationLabel}」` : ''}\n\n수량이나 가격을 바꾸거나, 공론장에서 이야기한 뒤 다시 시도해 보세요.`;
+      const bodyLines =
+        formattedViolationLines.length > 0
+          ? formattedViolationLines.join('\n\n')
+          : orderViolationPreview.keywords.length > 0
+            ? orderViolationPreview.keywords
+                .map((k) => `「${String(k).replace(/\r?\n/g, ' ').trim()}」`)
+                .join(' ')
+            : topViolationLabel
+              ? `「${topViolationLabel}」`
+              : previewViolationMessage;
+      return `${kimooniViolationOpener}${bodyLines}\n\n점검방에서 짚어 보고 싶으면 아래 버튼으로 들어가실 수 있어요.`;
     }
     return `${previewViolationMessage}\n\n그래도 나눠 사고, 적어 두는 습관은 유지하는 게 좋아요.`;
   }, [
-    interventionMessage,
     hasDecisionViolation,
     previewViolationMessage,
+    formattedViolationLines,
+    orderViolationPreview.keywords,
     topViolationLabel,
+    kimooniViolationOpener,
   ]);
 
   const orderModalCopy = useMemo(
@@ -392,9 +459,7 @@ export function StockOrderQuantityScreen({ navigation, route }: Props) {
           submitDisabled={sellSubmitBlocked}
           submitDisabledReason={sellSubmitHint}
           kimooniTitle={kimooniCoachTitle}
-          kimooniScoreLine={
-            hasDecisionViolation && !submittingOrder ? orderViolationPreview.scoreLine : undefined
-          }
+          kimooniScoreLine={kimooniScoreLineWithOpener}
           kimooniBullets={useKimooniBulletMode ? orderViolationPreview.bullets : undefined}
           kimooniMoreInForumCount={
             useKimooniBulletMode ? orderViolationPreview.moreInForumCount : undefined
@@ -458,8 +523,9 @@ export function StockOrderQuantityScreen({ navigation, route }: Props) {
                     <>
                       <Text style={styles.principleTitle}>이번 주문은 원칙과 어긋난 거래로 집계됐어요</Text>
                       <Text style={styles.principleDesc}>
-                        {interventionMessage ??
-                          `${stockName} ${orderType === 'buy' ? '매수' : '매도'}에서 미리 잡아둔 기준과 맞지 않을 수 있어요.`}
+                        {violationKeywordSummary.trim()
+                          ? violationKeywordSummary
+                          : `${stockName} ${orderType === 'buy' ? '매수' : '매도'}에서 미리 잡아둔 기준과 맞지 않을 수 있어요.`}
                       </Text>
                       {postTradeLedger ? (
                         <>
@@ -495,7 +561,7 @@ export function StockOrderQuantityScreen({ navigation, route }: Props) {
                       </Text>
                       {postTradeLedger && postTradeLedger.globalStrikes >= 5 ? (
                         <Pressable style={styles.principlesCta} onPress={goPrinciplesReport}>
-                          <Text style={styles.principlesCtaTxt}>투자 원칙 리포트 보기</Text>
+                          <Text style={styles.principlesCtaTxt}>나의 투자 원칙 보기</Text>
                         </Pressable>
                       ) : null}
                     </>

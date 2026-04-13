@@ -11,7 +11,7 @@ const WATCHLIST = [
     sectorKey: '정보기술',
     price: '202,500원',
     change: '-3.80%',
-    logo: require('../../assets/logos/samsung.png'),
+    logo: require('../../assets/logos/samsung_new.png'),
   },
   {
     name: '아모레퍼시픽',

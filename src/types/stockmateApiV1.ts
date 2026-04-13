@@ -339,11 +339,18 @@ export type ForumPostOutDto = {
   created_at: string;
 };
 
+/** 주문 점검방 — 위반 후보 원칙(랭크). 서버가 기자·회계사 조력 여부를 판단한다. */
+export type OrderPrincipleViolationRankItemDto = {
+  default_rank: number;
+  short_label?: string | null;
+};
+
 /** `POST .../agent-reply` */
 export type AgentReplyBody = {
   user_message: string;
   agent_id?: 'eagle' | 'owl' | 'turtle' | null;
   stock_name?: string | null;
+  order_principle_violations?: OrderPrincipleViolationRankItemDto[] | null;
 };
 
 export type AgentReplyDto = {
@@ -351,6 +358,10 @@ export type AgentReplyDto = {
   agent_name: string;
   content: string;
   post: ForumPostOutDto;
+  /** 주문 점검방: 키문이 이후 기자·회계사 조력 발언(순서대로) */
+  extra_replies?: AgentReplyDto[];
+  /** 점검방 키문이: 서버가 본문 뒤 블록에서 파싱한 후속 질문 3개 */
+  order_cli_suggestions?: string[] | null;
 };
 
 export type OpenDebateBody = { stock_name?: string | null };

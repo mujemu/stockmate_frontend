@@ -24,11 +24,13 @@ import {
   buildDebateForumSeedTopic,
   inferDebateForumEntrySource,
 } from '../config/debateForumEntry';
+import { extraAgentsForDefaultRank, orderPrincipleReplyAgentIds } from '../config/debateOrderPrincipleAgents';
 import { buildOrderPrincipleRecapItemsForDebate } from '../config/orderPrincipleViolationCopy';
 import { ForumHeroStage } from '../components/ForumHeroStage';
 import { useUserSession } from '../context/UserSessionContext';
 import { StockmateApiV1 } from '../services/stockmateApiV1';
 import type {
+  AgentReplyBody,
   AgentReplyDto,
   ForumPostOutDto,
   ForumTopicSummaryDto,
@@ -132,6 +134,21 @@ const ORDER_PRINCIPLE_RECAP_ID = 'order-principle-recap';
 
 type OrderRecapLine = { label: string; reasonOneLine: string };
 
+/** 카카오톡式: 왼쪽 연속 말풍선은 발신자 이름을 첫 덩어리에만 */
+function leftThreadSenderKey(row: ThreadRow): string | null {
+  if (row.kind === 'order_principle_recap' || row.kind === 'order_cli') return 'kimooni:order_flow';
+  if (row.kind === 'agent') return `agent:${row.agentId}`;
+  if (row.kind === 'post' && !row.mine) return `peer:${row.userId}`;
+  return null;
+}
+
+function showPartnerNameLabel(rows: ThreadRow[], index: number): boolean {
+  const key = leftThreadSenderKey(rows[index]);
+  if (key == null) return false;
+  if (index === 0) return true;
+  return leftThreadSenderKey(rows[index - 1]) !== key;
+}
+
 /**
  * 점검방: 일반 채팅처럼 시간 순서를 유지한다.
  * - `order_principle_recap` 은 맨 위(토픽 안내 직후) 한 번만 두고, 내용만 갱신한다.
@@ -204,6 +221,13 @@ export type DebateOrderContext = {
 };
 
 const ORDER_CLI_FALLBACKS = ['나눠 살 비중 점검', '손절·익절 가격 점검', '너무 빨리 따라 사는지 점검'];
+
+/** 점검방 CLI 패널 악센트(요청 색상) */
+const ORDER_CLI_ACCENT = '#7D3BDD';
+
+/** 키문이 본문 뒤 3지선다가 올 때 — 질문 문구는 본문과 별도로 항상 노출 */
+const ORDER_PRINCIPLE_ROLE_FOLLOWUP_PROMPT =
+  '이 원칙이 이번 매매 판단에서 어떤 역할을 할까요? 아래에서 가장 맞는 한 가지를 골라 주세요.';
 
 /** 위반 원칙 카드와 동일한 순서의 짧은 라벨 */
 function orderedRecapLabelsForOrderPrincipleCli(oc: DebateOrderContext | undefined): string[] {
@@ -307,9 +331,10 @@ function suggestCliFromContext(
   add('지금은 정리만 하고 나가기');
   add('키문이에게 한 가지만 더 물어보기');
   const choices = pick.slice(0, 3);
-  const prompt = owl.trim()
-    ? '키문이가 말한 내용을 보고, 아래에서 하실 일 하나만 골라 보내 주세요.'
-    : '지금부터 손볼 원칙을 아래에서 골라 주세요.';
+  const prompt =
+    owl.trim().length > 0
+      ? ORDER_PRINCIPLE_ROLE_FOLLOWUP_PROMPT
+      : '다음 행동을 골라 주세요. 번호 한 가지를 누르면 그에 맞춰 이어갈게요.';
   return { prompt, choices };
 }
 
@@ -425,12 +450,78 @@ export function DebateRoomScreen({ navigation, route }: Props) {
     ],
   );
 
+  const heroAgentsForStage = useMemo(() => {
+    if (!owlOnlyMode) {
+      return AGENTS.map((a) => ({ ...a, presence: 'active' as const }));
+    }
+    const ranks = (orderContext?.violationDetails ?? [])
+      .map((d) => Number(d.default_rank))
+      .filter((n) => n >= 1 && n <= 99);
+    let needEagle = false;
+    let needTurtle = false;
+    for (const r of ranks) {
+      const s = extraAgentsForDefaultRank(r);
+      if (s.has('eagle')) needEagle = true;
+      if (s.has('turtle')) needTurtle = true;
+    }
+    return AGENTS.map((a) => ({
+      ...a,
+      presence:
+        a.id === 'owl'
+          ? ('active' as const)
+          : a.id === 'eagle'
+            ? needEagle
+              ? ('active' as const)
+              : ('resting' as const)
+            : needTurtle
+              ? ('active' as const)
+              : ('resting' as const),
+    }));
+  }, [owlOnlyMode, orderContext?.violationDetails]);
+
+  /** 공론장 에이전트 발언 순서(백엔드 forum_agent._REPLY_ORDER / order_principle 시퀀스와 동기) */
+  const debateReplyOrder = useMemo((): AgentId[] => {
+    if (!owlOnlyMode) return ['eagle', 'turtle', 'owl'];
+    const ranks = (orderContext?.violationDetails ?? [])
+      .map((d) => Number((d as { default_rank: number }).default_rank))
+      .filter((n) => Number.isFinite(n) && n >= 1 && n <= 99);
+    return orderPrincipleReplyAgentIds(ranks);
+  }, [owlOnlyMode, orderContext?.violationDetails]);
+
+  const nextSpeakerIdForHero = useMemo((): AgentId | null => {
+    const seq = debateReplyOrder;
+    const isRestingChar = (id: AgentId) =>
+      heroAgentsForStage.find((a) => a.id === id)?.presence === 'resting';
+
+    if (speakerId == null) {
+      if (!isUserTyping) return null;
+      for (const id of seq) {
+        if (!isRestingChar(id)) return id;
+      }
+      return null;
+    }
+    const idx = seq.indexOf(speakerId);
+    if (idx < 0) return null;
+    for (let i = idx + 1; i < seq.length; i++) {
+      const id = seq[i];
+      if (!isRestingChar(id)) return id;
+    }
+    return null;
+  }, [speakerId, isUserTyping, debateReplyOrder, heroAgentsForStage]);
+
   const [cliPrompt, setCliPrompt] = useState('');
   const [cliChoices, setCliChoices] = useState<string[]>([]);
   const [historyVisible, setHistoryVisible] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyTopics, setHistoryTopics] = useState<ForumTopicSummaryDto[]>([]);
   const rankingLabelsRef = useRef<string[]>([]);
+  /** 점검방: 키문이 최신 본문(에러 시 CLI 복구·refresh 맥락용) */
+  const orderPrincipleLastOwlRef = useRef<string | null>(null);
+
+  const dismissOrderCli = useCallback(() => {
+    setCliPrompt('');
+    setCliChoices([]);
+  }, []);
 
   const listRef  = useRef<FlatList>(null);
   /** 사용자가 위로 읽고 있으면 false — 자동 scrollToEnd 가 스크롤을 빼앗지 않음 */
@@ -448,7 +539,7 @@ export function DebateRoomScreen({ navigation, route }: Props) {
     setChatHeight((h) => Math.min(maxChatH, Math.max(minChatH, h)));
   }, [minChatH, maxChatH]);
 
-  const onScrollChatList = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
+  const syncListNearBottomFromScrollEvent = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
     const vh = layoutMeasurement.height;
     if (vh <= 0) return;
@@ -458,6 +549,13 @@ export function DebateRoomScreen({ navigation, route }: Props) {
     }
     const distFromBottom = contentSize.height - vh - contentOffset.y;
     listNearBottomRef.current = distFromBottom < 120;
+  }, []);
+
+  const onScrollChatList = syncListNearBottomFromScrollEvent;
+
+  /** 타이핑 중에도 위로 읽을 수 있게 — 드래그 시작 시 자동 맨 아래 스크롤 끔 */
+  const onScrollBeginDragChatList = useCallback(() => {
+    listNearBottomRef.current = false;
   }, []);
 
   // ── 새 메시지·리스트 높이 변화 시 맨 아래로 (점검방도 일반 채팅처럼) ─────────────────
@@ -559,9 +657,43 @@ export function DebateRoomScreen({ navigation, route }: Props) {
       setRows((prev) =>
         prev.map((r) => (r.id === tempId ? { ...r, id: postId, text } : r)),
       );
+      setSpeakerId(null);
       scrollChatToEndAfterFlush();
     },
     [scrollChatToEndAfterFlush],
+  );
+
+  const buildForumAgentReplyBody = useCallback(
+    (userMessage: string, agentId?: AgentId): AgentReplyBody => {
+      const body: AgentReplyBody = {
+        user_message: userMessage,
+        stock_name: paramStockName ?? null,
+      };
+      if (agentId) body.agent_id = agentId;
+      if (owlOnlyMode) {
+        const d = orderContextRef.current?.violationDetails ?? [];
+        body.order_principle_violations = d
+          .map((x) => ({
+            default_rank: Number((x as { default_rank: number }).default_rank),
+            short_label: (x as { short_label?: string | null }).short_label ?? undefined,
+          }))
+          .filter((x) => Number.isFinite(x.default_rank) && x.default_rank >= 1);
+      }
+      return body;
+    },
+    [owlOnlyMode, paramStockName],
+  );
+
+  const appendAgentReplyBundle = useCallback(
+    async (reply: AgentReplyDto) => {
+      await addAgentTyping(reply.agent_id as AgentId, reply.agent_name, reply.content, reply.post.id);
+      if (reply.agent_id === 'owl') orderPrincipleLastOwlRef.current = reply.content;
+      for (const ex of reply.extra_replies ?? []) {
+        await addAgentTyping(ex.agent_id as AgentId, ex.agent_name, ex.content, ex.post.id);
+        if (ex.agent_id === 'owl') orderPrincipleLastOwlRef.current = ex.content;
+      }
+    },
+    [addAgentTyping],
   );
 
   const requestAgentReplyWithFallback = useCallback(
@@ -570,23 +702,29 @@ export function DebateRoomScreen({ navigation, route }: Props) {
       let lastError: unknown = null;
       for (const agentId of order) {
         try {
-          return await StockmateApiV1.forum.agentReply(tid, {
-            user_message: userMessage,
-            stock_name: paramStockName ?? null,
-            agent_id: agentId,
-          });
+          return await StockmateApiV1.forum.agentReply(tid, buildForumAgentReplyBody(userMessage, agentId));
         } catch (e) {
           lastError = e;
         }
       }
       throw lastError ?? new Error('에이전트 응답을 가져오지 못했습니다.');
     },
-    [paramStockName, owlOnlyMode],
+    [buildForumAgentReplyBody, owlOnlyMode],
   );
 
   const refreshOrderCli = useCallback(
-    async (lastOwlText: string | null, lastUserText: string | null) => {
+    async (
+      lastOwlText: string | null,
+      lastUserText: string | null,
+      aiSuggestions?: string[] | null,
+    ) => {
       if (!userId) return;
+      const cleanedAi = (aiSuggestions ?? []).map((s) => String(s).trim()).filter(Boolean);
+      if (cleanedAi.length === 3) {
+        setCliPrompt(ORDER_PRINCIPLE_ROLE_FOLLOWUP_PROMPT);
+        setCliChoices(cleanedAi);
+        return;
+      }
       let rankings = rankingLabelsRef.current;
       if (rankings.length === 0) {
         try {
@@ -608,9 +746,19 @@ export function DebateRoomScreen({ navigation, route }: Props) {
       ];
       if (!lastOwlText?.trim() && !lastUserText?.trim()) {
         const choices = await buildOrderPrincipleCliChoices(userId, orderContextRef.current);
-        setCliPrompt(
-          '먼저 손볼 원칙을 골라 주세요. 고르시면 키문이에게 전해지고, 아래「점검 마치고 나가기」로 언제든 나가실 수 있어요.',
-        );
+        const oc = orderContextRef.current;
+        const vd = oc?.violationDetails?.length ?? 0;
+        const vp = (oc?.violatedPrinciples ?? []).filter((x) => String(x).trim()).length;
+        const vCount = vd > 0 ? vd : vp;
+        if (choices.length > 0) {
+          setCliPrompt(
+            vCount > 1
+              ? '어느 위반 사항부터 이야기를 듣고 싶으신가요? 번호 버튼으로 골라 주시면 그 항목부터 짚어 드릴게요.'
+              : '아래 위반 사항을 먼저 확인해 보세요. 번호 버튼으로 이어서 짚어 보실 수 있어요.',
+          );
+        } else {
+          setCliPrompt('');
+        }
         setCliChoices(choices);
         return;
       }
@@ -620,13 +768,10 @@ export function DebateRoomScreen({ navigation, route }: Props) {
         rankings,
         seed,
       );
-      const vio = orderedRecapLabelsForOrderPrincipleCli(orderContextRef.current);
-      const merged =
-        owlOnlyMode && vio.length >= 3 ? [vio[0], vio[1], ORDER_CLI_NOT_IN_LIST_CHOICE] : choices;
       setCliPrompt(prompt);
-      setCliChoices(merged);
+      setCliChoices(choices);
     },
-    [userId, owlOnlyMode],
+    [userId],
   );
 
   const refreshOrderPrincipleTopicTitle = useCallback(async () => {
@@ -665,19 +810,11 @@ export function DebateRoomScreen({ navigation, route }: Props) {
         });
       }
       setRows([...prefix, ...postRows]);
-      {
-        let lastAgent: AgentId | null = null;
-        for (let i = posts.length - 1; i >= 0; i--) {
-          const aid = isAgentUserId(posts[i].user_id);
-          if (aid) {
-            lastAgent = aid;
-            break;
-          }
-        }
-        setSpeakerId(lastAgent);
-      }
+      /* 히어로 배지: 대화 중이 아닐 때는 쉬는중 — 마지막 화자로 고정하지 않음 */
+      setSpeakerId(null);
       if (isOrderPrincipleTopic && userId) {
-        void refreshOrderCli(lastOwlFromPosts(posts), lastUserPostContent(posts));
+        orderPrincipleLastOwlRef.current = lastOwlFromPosts(posts);
+        void refreshOrderCli(orderPrincipleLastOwlRef.current, lastUserPostContent(posts));
       } else {
         setCliPrompt('');
         setCliChoices([]);
@@ -697,7 +834,7 @@ export function DebateRoomScreen({ navigation, route }: Props) {
       });
       return;
     }
-    // 전송·답변 중에도 CLI 행을 유지해야 스크롤이 위로 튀지 않음(버튼은 disabled)
+    // 선택지가 있을 때만 CLI 행 부착(탭·전송 직후에는 비워 모달처럼 닫힘)
     const choicesForRow = cliChoices.length > 0 ? cliChoices : [];
     setRows((prev) => {
       const next = normalizeOrderPrincipleTail(
@@ -847,6 +984,7 @@ export function DebateRoomScreen({ navigation, route }: Props) {
       const uid = userId;
       if (!tid || !uid) return;
       setPostError(null);
+      dismissOrderCli();
 
       if (shortLabel === ORDER_CLI_NOT_IN_LIST_CHOICE) {
         setSending(true);
@@ -868,16 +1006,20 @@ export function DebateRoomScreen({ navigation, route }: Props) {
           } else {
             remainder = full.slice(2).map((x) => x.label.trim()).filter(Boolean);
           }
-          setCliPrompt(
-            '앞에서 고르신 두 가지 말고, 나머지에 어긋난 원칙이에요. 설명을 들을 항목을 골라 주세요.',
-          );
           if (remainder.length === 0) {
             const back = await buildOrderPrincipleCliChoices(uid, orderContextRef.current);
-            setCliChoices(back);
             setCliPrompt(
-              '같은 주문 기준으로 더 짚을 어긋남은 없어요. 위 두 가지 중 하나를 고르시거나, 글로 질문해 주세요.',
+              back.length > 1
+                ? '남은 위반 항목이 있으면, 번호로 골라 주세요.'
+                : '마지막으로 짚을 항목이 있으면 눌러 주세요.',
             );
+            setCliChoices(back);
           } else {
+            setCliPrompt(
+              remainder.length > 1
+                ? '남은 위반 항목 중 어떤 것부터 이야기를 들을까요? 번호로 골라 주세요.'
+                : '이 항목도 함께 짚어 볼까요?',
+            );
             setCliChoices(remainder);
           }
         } catch (e) {
@@ -886,17 +1028,24 @@ export function DebateRoomScreen({ navigation, route }: Props) {
           setPostError(e instanceof Error ? e.message : String(e));
           if (fallback.length > 0) {
             setCliPrompt(
-              '앞에서 고르신 두 가지 말고, 나머지에 어긋난 원칙이에요. 설명을 들을 항목을 골라 주세요.',
+              fallback.length > 1
+                ? '남은 위반 항목 중 어떤 것부터 이야기를 들을까요? 번호로 골라 주세요.'
+                : '이 항목도 함께 짚어 볼까요?',
             );
             setCliChoices(fallback);
           } else {
             try {
               const back = await buildOrderPrincipleCliChoices(uid, orderContextRef.current);
               setCliChoices(back);
+              setCliPrompt(
+                back.length > 1
+                  ? '남은 위반 항목이 있으면, 번호로 골라 주세요.'
+                  : '마지막으로 짚을 항목이 있으면 눌러 주세요.',
+              );
             } catch {
               setCliChoices([]);
+              setCliPrompt('');
             }
-            setCliPrompt('나머지 목록을 불러오지 못했어요. 잠시 후 다시 눌러 주세요.');
           }
         } finally {
           setSending(false);
@@ -937,17 +1086,13 @@ export function DebateRoomScreen({ navigation, route }: Props) {
         setSending(false);
         setAgentReplying(true);
         const reply1 = await requestAgentReplyWithFallback(tid, content);
-        await addAgentTyping(
-          reply1.agent_id as AgentId,
-          reply1.agent_name,
-          reply1.content,
-          reply1.post.id,
-        );
-        void refreshOrderCli(reply1.content, content);
+        await appendAgentReplyBundle(reply1);
+        void refreshOrderCli(reply1.content, content, reply1.order_cli_suggestions ?? null);
         void refreshOrderPrincipleTopicTitle();
       } catch (e) {
         setRows((prev) => prev.filter((r) => r.id !== optimisticId));
         setPostError(e instanceof Error ? e.message : String(e));
+        void refreshOrderCli(orderPrincipleLastOwlRef.current, null);
       } finally {
         setSending(false);
         setAgentReplying(false);
@@ -957,8 +1102,9 @@ export function DebateRoomScreen({ navigation, route }: Props) {
     [
       topicId,
       userId,
+      dismissOrderCli,
       requestAgentReplyWithFallback,
-      addAgentTyping,
+      appendAgentReplyBundle,
       refreshOrderCli,
       refreshOrderPrincipleTopicTitle,
     ],
@@ -1012,6 +1158,7 @@ export function DebateRoomScreen({ navigation, route }: Props) {
     setSpeakerId(null);
     setSending(true);
     setPostError(null);
+    if (owlOnlyMode) dismissOrderCli();
     const postBody = broadcastAll ? `[전체 에이전트에게] ${content}` : content;
     try {
       const post = await StockmateApiV1.forum.createPost(topicId, { user_id: userId, content: postBody });
@@ -1026,38 +1173,31 @@ export function DebateRoomScreen({ navigation, route }: Props) {
         if (broadcastAll) {
           const broadcastIds: AgentId[] = owlOnlyMode ? ['owl'] : [...AGENT_IDS];
           let lastOwl: string | null = null;
+          let lastOwlCli: string[] | null = null;
           for (const agentId of broadcastIds) {
             try {
-              const reply = await StockmateApiV1.forum.agentReply(topicId, {
-                user_message: content,
-                stock_name: paramStockName ?? null,
-                agent_id: agentId,
-              });
-              if (reply.agent_id === 'owl') lastOwl = reply.content;
-              await addAgentTyping(
-                reply.agent_id as AgentId,
-                reply.agent_name,
-                reply.content,
-                reply.post.id,
+              const reply = await StockmateApiV1.forum.agentReply(
+                topicId,
+                buildForumAgentReplyBody(content, agentId),
               );
+              if (reply.agent_id === 'owl') {
+                lastOwl = reply.content;
+                lastOwlCli = reply.order_cli_suggestions ?? null;
+              }
+              await appendAgentReplyBundle(reply);
             } catch {
               /* 한 캐릭터 실패 시 다음으로 */
             }
           }
           if (owlOnlyMode && lastOwl) {
-            void refreshOrderCli(lastOwl, content);
+            void refreshOrderCli(lastOwl, content, lastOwlCli);
             void refreshOrderPrincipleTopicTitle();
           }
         } else {
           const reply1 = await requestAgentReplyWithFallback(topicId, content);
-          await addAgentTyping(
-            reply1.agent_id as AgentId,
-            reply1.agent_name,
-            reply1.content,
-            reply1.post.id,
-          );
+          await appendAgentReplyBundle(reply1);
           if (owlOnlyMode) {
-            void refreshOrderCli(reply1.content, content);
+            void refreshOrderCli(reply1.content, content, reply1.order_cli_suggestions ?? null);
             void refreshOrderPrincipleTopicTitle();
           }
 
@@ -1067,23 +1207,17 @@ export function DebateRoomScreen({ navigation, route }: Props) {
               let reply2: AgentReplyDto | null = null;
               for (const agentId of followupOrder) {
                 try {
-                  reply2 = await StockmateApiV1.forum.agentReply(topicId, {
-                    user_message: content,
-                    stock_name: paramStockName ?? null,
-                    agent_id: agentId,
-                  });
+                  reply2 = await StockmateApiV1.forum.agentReply(
+                    topicId,
+                    buildForumAgentReplyBody(content, agentId),
+                  );
                   break;
                 } catch {
                   /* 다음 후보 */
                 }
               }
               if (reply2) {
-                await addAgentTyping(
-                  reply2.agent_id as AgentId,
-                  reply2.agent_name,
-                  reply2.content,
-                  reply2.post.id,
-                );
+                await appendAgentReplyBundle(reply2);
               }
             } catch {
               /* 두 번째 응답 생략 */
@@ -1091,6 +1225,7 @@ export function DebateRoomScreen({ navigation, route }: Props) {
           }
         }
       } catch {
+        if (owlOnlyMode) void refreshOrderCli(orderPrincipleLastOwlRef.current, null);
         setRows((prev) => [
           ...prev,
           {
@@ -1107,24 +1242,34 @@ export function DebateRoomScreen({ navigation, route }: Props) {
     } catch (e) {
       setInput(raw);
       setPostError(e instanceof Error ? e.message : String(e));
+      if (owlOnlyMode) void refreshOrderCli(orderPrincipleLastOwlRef.current, null);
     } finally {
       setSending(false);
     }
   };
 
-  // ── 말풍선 렌더 ───────────────────────────────────────────────────────────────
-  const renderItem = ({ item }: { item: ThreadRow }) => {
+  // ── 말풍선 렌더 (카카오톡式: 내 말 오른쪽·상대 왼쪽·연속 시 이름 생략) ───────────────
+  const renderItem = ({ item, index }: { item: ThreadRow; index: number }) => {
     if (item.kind === 'order_principle_recap') {
-      const full = orderPrincipleRecapFull;
-      const recapSub =
-        full.length >= 3
-          ? '지금 주문과 안 맞을 수 있는 원칙을 모두 적었어요. 1·2번이 아닌 다른 점을 보시려면「다음 행동」에서 3번「여기에 없어요」를 눌러 주세요.'
-          : '아래「다음 행동」에서 이어서 하실 일을 골라 주세요.';
+      const showName = showPartnerNameLabel(rows, index);
       return (
-        <View style={styles.msgRow}>
-          <View style={styles.recapCard}>
+        <View style={[styles.msgRow, styles.msgLeft, styles.threadRowFull]}>
+          {showName ? (
+            <View style={styles.msgLeftHead}>
+              <Text style={styles.msgName}>키문이</Text>
+            </View>
+          ) : (
+            <View style={styles.msgNameSpacer} />
+          )}
+          <View style={[styles.bubble, styles.partnerMessageBubble]}>
             <Text style={styles.recapCardTitle}>위반 원칙</Text>
-            <Text style={styles.recapCardSub}>{recapSub}</Text>
+            {item.items.length > 0 ? (
+              <Text style={styles.recapCardIntro}>
+                {item.items.length > 1
+                  ? '어느 위반 사항부터 이야기를 듣고 싶으신가요? 아래 번호를 참고하시고, 맨 아래 버튼에서 먼저 짚을 항목을 골라 주세요.'
+                  : '아래 위반 사항을 먼저 확인해 보세요. 맨 아래 버튼에서 이어서 짚어 보실 수 있어요.'}
+              </Text>
+            ) : null}
             <View style={styles.recapList}>
               {item.items.map((row, idx) => (
                 <View
@@ -1135,8 +1280,12 @@ export function DebateRoomScreen({ navigation, route }: Props) {
                   <View style={styles.recapLineBody}>
                     <Text style={styles.recapOneLine} numberOfLines={2}>
                       <Text style={styles.recapBold}>「{row.label}」</Text>
-                      {' — '}
-                      {row.reasonOneLine}
+                      {row.reasonOneLine?.trim() ? (
+                        <>
+                          {' — '}
+                          {row.reasonOneLine}
+                        </>
+                      ) : null}
                     </Text>
                   </View>
                 </View>
@@ -1148,13 +1297,23 @@ export function DebateRoomScreen({ navigation, route }: Props) {
     }
     if (item.kind === 'order_cli') {
       const busy = sending || agentReplying;
+      const showName = showPartnerNameLabel(rows, index);
       return (
-        <View style={styles.msgRow}>
-          <View style={[styles.cliPanel, styles.cliInlinePanel]}>
-            <Text style={styles.cliHeaderLabel}>다음 행동</Text>
-            <View style={styles.cliPromptWrap}>
-              <Text style={styles.cliPrompt}>{item.prompt}</Text>
+        <View style={[styles.msgRow, styles.msgLeft, styles.threadRowFull]}>
+          {showName ? (
+            <View style={styles.msgLeftHead}>
+              <Text style={styles.msgName}>키문이</Text>
             </View>
+          ) : (
+            <View style={styles.msgNameSpacer} />
+          )}
+          <View style={[styles.bubble, styles.partnerMessageBubble, styles.partnerCliBubble]}>
+            <Text style={styles.cliHeaderLabelInBubble}>다음 행동</Text>
+            {item.prompt.trim() ? (
+              <View style={styles.cliPromptWrapInBubble}>
+                <Text style={styles.cliPrompt}>{item.prompt}</Text>
+              </View>
+            ) : null}
             {item.choices.map((c, idx) => (
               <Pressable
                 key={`${idx}-${c.slice(0, 24)}`}
@@ -1172,38 +1331,57 @@ export function DebateRoomScreen({ navigation, route }: Props) {
     }
     if (item.kind === 'topic') {
       return (
-        <View style={styles.msgRow}>
-          <View style={[styles.bubble, styles.topicBubble]}>
-            <Text style={styles.topicBubbleText}>{item.text}</Text>
+        <View style={[styles.msgRow, styles.threadRowFull, styles.systemMsgRow]}>
+          <View style={[styles.bubble, styles.systemNoticeBubble]}>
+            <Text style={styles.systemNoticeText}>{item.text}</Text>
           </View>
         </View>
       );
     }
     if (item.kind === 'agent') {
+      const showName = showPartnerNameLabel(rows, index);
       return (
-        <View style={[styles.msgRow, styles.msgLeft]}>
-          <View style={styles.msgLeftHead}>
-            <Text style={styles.msgName}>{item.agentName}</Text>
-          </View>
-          <View style={[styles.bubble, styles.agentAIBubble]}>
+        <View style={[styles.msgRow, styles.msgLeft, styles.threadRowFull]}>
+          {showName ? (
+            <View style={styles.msgLeftHead}>
+              <Text style={styles.msgName}>{item.agentName}</Text>
+            </View>
+          ) : (
+            <View style={styles.msgNameSpacer} />
+          )}
+          <View style={[styles.bubble, styles.partnerMessageBubble]}>
             <Text style={styles.bubbleText}>{item.text}</Text>
           </View>
         </View>
       );
     }
-    const isUser  = item.mine;
+    const isUser = item.mine;
     const agentId = isAgentUserId(item.userId);
+    const showPeerName = !isUser && showPartnerNameLabel(rows, index);
     return (
-      <View style={[styles.msgRow, isUser ? styles.msgRight : styles.msgLeft]}>
-        {!isUser && (
+      <View style={[styles.msgRow, isUser ? styles.msgRight : styles.msgLeft, styles.threadRowFull]}>
+        {!isUser && showPeerName ? (
           <View style={styles.msgLeftHead}>
             <Text style={styles.msgName}>
               {agentId ? AGENT_LABELS[agentId] : '참여자 · ' + item.userId.slice(0, 8) + '…'}
             </Text>
           </View>
-        )}
-        <View style={[styles.bubble, isUser ? styles.userBubble : (agentId ? styles.agentAIBubble : styles.agentBubble)]}>
-          <Text style={[styles.bubbleText, isUser && styles.userBubbleText]}>{item.text}</Text>
+        ) : !isUser ? (
+          <View style={styles.msgNameSpacer} />
+        ) : null}
+        <View
+          style={[
+            styles.bubble,
+            isUser
+              ? styles.userBubbleKakao
+              : agentId
+                ? styles.partnerMessageBubble
+                : styles.agentBubble,
+          ]}
+        >
+          <Text style={[styles.bubbleText, isUser && styles.userBubbleKakaoText]}>
+            {item.text}
+          </Text>
         </View>
       </View>
     );
@@ -1212,9 +1390,18 @@ export function DebateRoomScreen({ navigation, route }: Props) {
   const listFooter = (
     <View style={styles.listFooterCol}>
       {sending || agentReplying ? (
-        <Text style={styles.thinking}>
-          {agentReplying ? '키문이가 천천히 답을 쓰고 있어요…' : '보내는 중이에요…'}
-        </Text>
+        <View style={[styles.msgRow, styles.msgLeft, styles.threadRowFull]}>
+          <View style={styles.msgNameSpacer} />
+          <View style={[styles.bubble, styles.partnerMessageBubble, styles.typingBubble]}>
+            <Text style={styles.typingBubbleText}>
+              {agentReplying
+                ? owlOnlyMode
+                  ? '키문이·조력 캐릭터가 입력 중이에요…'
+                  : '키문이가 입력 중이에요…'
+                : '보내는 중이에요…'}
+            </Text>
+          </View>
+        </View>
       ) : null}
     </View>
   );
@@ -1226,8 +1413,9 @@ export function DebateRoomScreen({ navigation, route }: Props) {
       <View style={StyleSheet.absoluteFill} pointerEvents="none">
         <ForumHeroStage
           speakerId={speakerId}
+          nextSpeakerId={nextSpeakerIdForHero}
           isUserTyping={isUserTyping}
-          agents={owlOnlyMode ? [AGENTS[1]] : AGENTS}
+          agents={heroAgentsForStage}
         />
       </View>
 
@@ -1272,8 +1460,13 @@ export function DebateRoomScreen({ navigation, route }: Props) {
             renderItem={renderItem}
             ListFooterComponent={listFooter}
             onScroll={onScrollChatList}
-            scrollEventThrottle={24}
-            onContentSizeChange={() => scrollChatToEnd(false, false)}
+            onScrollBeginDrag={onScrollBeginDragChatList}
+            scrollEventThrottle={16}
+            onMomentumScrollEnd={syncListNearBottomFromScrollEvent}
+            onContentSizeChange={() => {
+              if (!listNearBottomRef.current) return;
+              scrollChatToEnd(false, false);
+            }}
           />
         )}
 
@@ -1284,7 +1477,7 @@ export function DebateRoomScreen({ navigation, route }: Props) {
             accessibilityRole="button"
             accessibilityLabel="점검 마치고 나가기"
           >
-            <Ionicons name="exit-outline" size={18} color={Colors.primary} />
+            <Ionicons name="exit-outline" size={18} color={ORDER_CLI_ACCENT} />
             <Text style={styles.exitStripTxt}>점검 마치고 나가기</Text>
           </Pressable>
         ) : null}
@@ -1326,13 +1519,15 @@ export function DebateRoomScreen({ navigation, route }: Props) {
 
       {/* 상단 투명 바 — 점검방(주문 전)은 뒤로가기 대신 하단「점검 마치고 나가기」만 사용 */}
       <View style={[styles.topBar, { paddingTop: insets.top + 8 }]} pointerEvents="box-none">
-        {owlOnlyMode ? (
-          <View style={styles.backHit} />
-        ) : (
-          <Pressable onPress={() => navigation.goBack()} hitSlop={12} style={styles.backHit}>
-            <Ionicons name="chevron-back" size={28} color="#fff" />
-          </Pressable>
-        )}
+        <Pressable
+          onPress={() => navigation.goBack()}
+          hitSlop={12}
+          style={styles.backHit}
+          accessibilityRole="button"
+          accessibilityLabel={owlOnlyMode ? '점검 나가기' : '뒤로'}
+        >
+          <Ionicons name="chevron-back" size={28} color="#fff" />
+        </Pressable>
         <View style={styles.topTitles}>
           {!debateHeaderCompact ? (
             <Text style={styles.serviceTitle}>인공지능 비즈니스 분석 서비스</Text>
@@ -1492,28 +1687,91 @@ const styles = StyleSheet.create({
   listFooterCol: { paddingBottom: 8, gap: 6, alignSelf: 'stretch' },
   chatListContentGrow: { flexGrow: 1 },
   cliInlinePanel: { marginTop: 4, marginBottom: 2 },
-  recapCard: {
-    alignSelf: 'stretch',
-    backgroundColor: Colors.card,
-    borderRadius: 12,
+  threadRowFull: { width: '100%', alignSelf: 'stretch' },
+  msgNameSpacer: { height: 2 },
+  /** 상대(키문이·에이전트) 말풍선 — 밝은 배경 */
+  partnerMessageBubble: {
+    backgroundColor: '#FFFFFF',
     borderWidth: 1,
-    borderColor: '#D5DADF',
+    borderColor: '#E6E6EA',
+    borderRadius: 18,
+    maxWidth: '82%',
+    alignSelf: 'flex-start',
+    paddingHorizontal: 14,
     paddingVertical: 12,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.06,
+        shadowRadius: 2,
+      },
+      android: { elevation: 1 },
+    }),
+  },
+  partnerCliBubble: {
+    paddingBottom: 10,
+    maxWidth: '88%',
+    backgroundColor: '#FFFFFF',
+    borderColor: '#E6E6EA',
+  },
+  typingBubble: { paddingVertical: 10, paddingHorizontal: 12 },
+  typingBubbleText: { fontSize: 13, lineHeight: 18, color: '#5C5F6E', fontWeight: '600' },
+  systemMsgRow: { alignItems: 'center' },
+  systemNoticeBubble: {
+    alignSelf: 'center',
+    maxWidth: '92%',
+    backgroundColor: 'rgba(0,0,0,0.06)',
+    borderRadius: 14,
+    borderWidth: 0,
     paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  systemNoticeText: {
+    color: '#5C5F6E',
+    fontSize: 12,
+    lineHeight: 18,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  userBubbleKakao: {
+    backgroundColor: ORDER_CLI_ACCENT,
+    borderWidth: 0,
+    borderRadius: 18,
+    maxWidth: '78%',
+    alignSelf: 'flex-end',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  userBubbleKakaoText: { color: '#FFFFFF' },
+  cliHeaderLabelInBubble: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#2A2540',
+    letterSpacing: -0.2,
     marginBottom: 2,
+  },
+  cliPromptWrapInBubble: {
+    backgroundColor: '#F5F6FA',
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#E5E8EF',
+    marginBottom: 6,
   },
   recapCardTitle: {
     fontSize: 13,
     fontWeight: '800',
-    color: '#7D3BDD',
-    marginBottom: 4,
+    color: '#1A1D2D',
+    marginBottom: 6,
   },
-  recapCardSub: {
-    fontSize: 11,
+  recapCardIntro: {
+    fontSize: 13,
+    lineHeight: 20,
     fontWeight: '600',
-    color: '#6B7280',
+    color: Colors.text,
     marginBottom: 10,
-    lineHeight: 16,
   },
   recapList: { gap: 0 },
   recapLine: {
@@ -1580,7 +1838,7 @@ const styles = StyleSheet.create({
     paddingTop: 10,
     paddingBottom: 12,
   },
-  msgRow:      { marginBottom: 12 },
+  msgRow:      { marginBottom: 10, alignSelf: 'stretch' },
   msgLeft:     { alignItems: 'flex-start' },
   msgRight:    { alignItems: 'flex-end' },
   msgLeftHead: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 },
@@ -1621,8 +1879,8 @@ const styles = StyleSheet.create({
     gap: 12,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: '#C9CFD8',
-    backgroundColor: Colors.card,
+    borderColor: '#D5DADF',
+    backgroundColor: '#FFFFFF',
     paddingVertical: 12,
     paddingHorizontal: 12,
   },
@@ -1645,11 +1903,11 @@ const styles = StyleSheet.create({
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: '#E0DCF0',
   },
-  exitStripTxt: { fontSize: 14, fontWeight: '800', color: Colors.primary },
-  agentBubble:    { backgroundColor: '#F0EEF9', borderWidth: 1, borderColor: '#DDD8F0' },
-  agentAIBubble:  { backgroundColor: '#EAE4FB', borderWidth: 1, borderColor: '#C8B8F5' },
+  exitStripTxt: { fontSize: 14, fontWeight: '800', color: ORDER_CLI_ACCENT },
+  agentBubble:    { backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E6E6EA' },
+  agentAIBubble:  { backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E6E6EA' },
   userBubble:     { backgroundColor: Colors.primary },
-  bubbleText:     { color: '#2A2540', fontSize: 14, lineHeight: 20, fontWeight: '600' },
+  bubbleText:     { color: '#2A2540', fontSize: 15, lineHeight: 22, fontWeight: '500' },
   userBubbleText: { color: '#fff' },
   thinking: { fontSize: 12, color: '#9E96C0', fontWeight: '600', marginTop: 4 },
   inputBar: {

@@ -33,13 +33,13 @@ export type KiwoomOrderQuantitySheetProps = {
   kimooniScoreLine?: string;
   /** 원칙 위반 요약 불릿 (최대 2줄 권장, 나머지는 moreCount) */
   kimooniBullets?: string[];
-  /** 불릿 외 추가 건수 → 공론장에서 확인 */
+  /** 불릿 외 추가 건수 → 점검방에서 확인 */
   kimooniMoreInForumCount?: number;
   /** 불릿 아래 안내 문장 */
   kimooniLead?: string;
   /** 불릿 미사용 시 긴 본문(기존) */
   kimooniBody?: string;
-  /** 공론장으로 이동 (주문 전 원칙 논의) */
+  /** 점검방(DebateRoom)으로 이동 (주문 전 원칙 논의) */
   onOpenDebate?: () => void;
   /** 행동 로그·개입 문구 로딩 중 */
   loadingBehavior?: boolean;
@@ -311,14 +311,14 @@ export function KiwoomOrderQuantitySheet({
                     </View>
                     {(kimooniMoreInForumCount ?? 0) > 0 ? (
                       <Text style={styles.kimooniMore}>
-                        + {kimooniMoreInForumCount}개 더 있어요 → 공론장에서 확인
+                        + {kimooniMoreInForumCount}개 더 있어요 → 점검방에서 확인
                       </Text>
                     ) : null}
                     {kimooniLead ? <Text style={styles.kimooniLead}>{kimooniLead}</Text> : null}
                     {onOpenDebate ? (
                       <Pressable style={styles.kimooniDebateBtnWide} onPress={onOpenDebate}>
                         <Ionicons name="chatbubbles-outline" size={18} color="#fff" />
-                        <Text style={styles.kimooniDebateBtnWideTxt}>지금 공론장 입장</Text>
+                        <Text style={styles.kimooniDebateBtnWideTxt}>지금 점검방 입장</Text>
                       </Pressable>
                     ) : null}
                   </>
@@ -331,7 +331,7 @@ export function KiwoomOrderQuantitySheet({
                     {onOpenDebate ? (
                       <Pressable style={styles.kimooniDebateBtnWide} onPress={onOpenDebate}>
                         <Ionicons name="chatbubbles-outline" size={18} color="#fff" />
-                        <Text style={styles.kimooniDebateBtnWideTxt}>지금 공론장 입장</Text>
+                        <Text style={styles.kimooniDebateBtnWideTxt}>지금 점검방 입장</Text>
                       </Pressable>
                     ) : null}
                   </>
